@@ -27,21 +27,21 @@ describe('Get currency info by locale', () => {
                 this.timeout(50000);
                 const input = "This house is beautiful";
                 const results = recognizeUnitByLocale("en-US", input);
-                expect(results).to.be.false;
+                expect(results).to.be.null;
             });
 
             it('Should not recognize unit if not present (pt-PT)', function () {
                 this.timeout(50000);
                 const input = "Esta casa é bonita";
                 const results = recognizeUnitByLocale("pt-PT", input);
-                expect(results).to.be.false;
+                expect(results).to.be.null;
             });
 
             it('Should not recognize unit if not present (de-DE)', function () {
                 this.timeout(50000);
                 const input = "Dieses Haus ist schön";
                 const results = recognizeUnitByLocale("de-DE", input);
-                expect(results).to.be.false;
+                expect(results).to.be.null;
             });
         });
 
