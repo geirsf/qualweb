@@ -1,11 +1,6 @@
 import { expect } from 'chai';
-import { createRequire } from 'module';
-import { dirname, resolve } from 'path';
+import { resolve } from 'path';
 import puppeteer, { Browser, Page } from 'puppeteer';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
 
 describe('QualWeb counter', async () => {
   let browser: Browser;
