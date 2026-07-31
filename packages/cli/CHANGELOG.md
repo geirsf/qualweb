@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.30
+
+### Patch Changes
+
+- Updated dependencies [91b4f9f]
+  - @qualweb/counter@0.3.5
+
 ## 0.7.29
 
 ### Patch Changes
