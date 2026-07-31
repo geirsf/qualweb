@@ -7,7 +7,12 @@
     "type": "git",
     "url": "git+https://github.com/qualweb/qualweb.git"
   },
-  "scripts": {},
+  "scripts": {
+    "lint:all": "npm run lint --workspaces --if-present",
+    "build:all": "npm run build --workspaces --if-present",
+    "test:all": "npm test --workspaces --if-present",
+    "ci:check": "npm run lint:all && npm run build:all && npm run test:all"
+  },
   "keywords": [
     "qualweb",
     "accessibility",
