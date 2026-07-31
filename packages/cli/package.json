@@ -1,6 +1,6 @@
 {
   "name": "@qualweb/cli",
-  "version": "0.7.29",
+  "version": "0.7.30",
   "description": "QualWeb evaluator command line interface",
   "main": "dist/cli.js",
   "bin": {
@@ -43,7 +43,7 @@
     "@qualweb/act-rules": "0.8.5",
     "@qualweb/best-practices": "0.7.13",
     "@qualweb/core": "0.9.4",
-    "@qualweb/counter": "0.3.4",
+    "@qualweb/counter": "0.3.5",
     "@qualweb/earl-reporter": "0.5.18",
     "@qualweb/wcag-techniques": "0.4.8",
     "commander": "^12.1.0",
