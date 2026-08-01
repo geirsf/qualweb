@@ -9,13 +9,16 @@ import sonarjsPlugin from 'eslint-plugin-sonarjs';
 
 export const defaultConfig = [
   {
+    ignores: [
+      '**/dist/**',
+      '**/prebuild/**',
+    ],
+  },
+  {
     extends: [
       eslint.configs.recommended,
       ...tseslint.configs.recommended,
     ],
-    // ignores: [
-    //   './test/fixtures/**/*',
-    // ],
     files: [
       'src/**/*.ts',
       'test/**/*.ts',
