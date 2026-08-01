@@ -25,7 +25,9 @@ export const defaultConfig = [
     ],
     languageOptions: {
       parserOptions: {
-        project: 'tsconfig.json',
+        projectService: {
+          allowDefaultProject: ['packages/counter/test/counter.spec.ts'],
+        },
       },
     },
   },
