@@ -6,6 +6,15 @@ verification testing being done in the repo.
 We use [Mocha](https://mochajs.org) (together with [Chai](https://www.chaijs.com))
 for our testing.
 
+## Root CI parity scripts
+
+The root package provides convenience scripts to run workspace checks in the same way as CI from the monorepo root:
+
+- `npm run lint:all`
+- `npm run build:all`
+- `npm run test:all`
+- `npm run ci:check` (runs lint, build, then tests)
+
 Each package has its own .mocharc.js configuration file. While all
 configurations derive from a base file .mocharc.base.json in the root of this
 repository, some may override base settings or add their own, depending on the
