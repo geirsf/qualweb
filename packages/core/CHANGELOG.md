@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.5
+
+### Patch Changes
+
+- Updated dependencies [576e03d]
+  - @qualweb/qw-page@0.3.8
+
 ## 0.9.4
 
 ### Patch Changes

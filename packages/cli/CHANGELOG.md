@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.31
+
+### Patch Changes
+
+- @qualweb/core@0.9.5
+- @qualweb/earl-reporter@0.5.19
+
 ## 0.7.30
 
 ### Patch Changes
