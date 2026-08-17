@@ -1,10 +1,5 @@
 import type { QWElement } from '@qualweb/qw-element';
-import {
-  ElementExists,
-  ElementIsHTMLElement,
-  ElementIsNot,
-  ElementIsVisible
-} from '@qualweb/util/applicability';
+import { ElementExists, ElementIsHTMLElement, ElementIsNot, ElementIsVisible } from '@qualweb/util/applicability';
 import { Test, Verdict } from '@qualweb/core/evaluation';
 import { AtomicRule } from '../lib/AtomicRule.object';
 import Color from 'colorjs.io';
@@ -16,26 +11,70 @@ interface RGBColor {
   alpha: number;
 }
 
+interface NonSolidEvaluation {
+  test: Test;
+  element: QWElement;
+  background: string;
+  text: string;
+}
+
 /** Result of resolving an element's effective solid background. */
 type BackgroundResolution =
-  | { kind: 'color'; color: RGBColor }
+  | { kind: 'color'; background: RGBColor; foreground: RGBColor }
   | { kind: 'cantTell'; resultCode: 'W2' | 'W3' };
 
 const WHITE: RGBColor = { red: 255, green: 255, blue: 255, alpha: 1 };
-const INPUT_TAGS = ['input', 'select', 'textarea'];
-const GRADIENT_REGEX = /((\w-?)*gradient.*)/gm;
+const TRANSPARENT: RGBColor = { red: 0, green: 0, blue: 0, alpha: 0 };
+const LARGE_BOLD_TEXT_PX = (14 * 96) / 72;
+const LARGE_TEXT_PX = (18 * 96) / 72;
+
+/** Concrete WAI-ARIA roles whose superclass is group or widget. */
+const GROUP_OR_WIDGET_ROLES = new Set([
+  'group',
+  'button',
+  'checkbox',
+  'columnheader',
+  'combobox',
+  'grid',
+  'gridcell',
+  'link',
+  'listbox',
+  'menu',
+  'menubar',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'progressbar',
+  'radio',
+  'radiogroup',
+  'row',
+  'rowheader',
+  'scrollbar',
+  'searchbox',
+  'separator',
+  'slider',
+  'spinbutton',
+  'switch',
+  'tab',
+  'tablist',
+  'textbox',
+  'toolbar',
+  'tree',
+  'treegrid',
+  'treeitem'
+]);
 
 /**
  * QW-ACT-R37 — text has sufficient colour contrast.
  *
- * This is a structural refactor of the rule: the verdict semantics
- * (P1-P3 / F1-F2 / W1-W3) are preserved exactly. Only flow decomposition,
- * the disabled-widget lookup (now a memoised Set), typing and a few defensive
- * guards have changed.
+ * The implementation resolves solid foreground/background pixels through
+ * ancestor opacity groups. Image and gradient backgrounds produce a warning
+ * because the painted pixels behind the text cannot be inferred reliably.
  */
 class QW_ACT_R37 extends AtomicRule {
-  /** Memoised disabled-widget selectors, keyed on the source array identity. */
-  private disabledSelectorCache?: { source: unknown; selectors: Set<string> };
+  /** Memoised accessible-name roots for disabled widgets. */
+  private disabledLabelCache?: { source: unknown; selectors: Set<string> };
 
   @ElementExists
   @ElementIsHTMLElement
@@ -44,30 +83,21 @@ class QW_ACT_R37 extends AtomicRule {
   execute(element: QWElement): void {
     if (!window.DomUtils.isElementVisible(element)) return;
 
-    const nodeName = element.getElementTagName();
-    const isInputField = INPUT_TAGS.includes(nodeName);
     const elementText = element.getElementOwnText().trim();
-    const placeholder = element.getElementAttribute('placeholder')?.trim();
 
-    // Not applicable: no own text, not a form field, no placeholder.
-    if (elementText === '' && !isInputField && !placeholder) return;
+    // ACT afw4f7 targets visible characters in text nodes. Form values and
+    // placeholders are rendered UI text, but are not text nodes.
+    if (elementText === '') return;
 
     if (!element.isElementHTMLElement()) return;
 
-    // Excluded if the element (or one of its children) belongs to a disabled widget.
-    const elementSelector = element.getElementSelector();
-    if (this.getDisabledSelectors(window.disabledWidgets).has(elementSelector)) return;
-
-    // Excluded if the element is a disabled group.
-    if (this.isDisabledGroup(element)) return;
+    if (this.hasDisabledAncestorOrLabel(element, window.disabledWidgets)) return;
 
     const fgColor = element.getElementStyleProperty('color', null);
     const bgColor = this.getBackground(element);
-    const opacity = parseFloat(element.getElementStyleProperty('opacity', null) || '1');
+    const opacity = this.parseOpacity(element.getElementStyleProperty('opacity', null));
     const fontSize = element.getElementStyleProperty('font-size', null);
     const fontWeight = element.getElementStyleProperty('font-weight', null);
-    const fontFamily = element.getElementStyleProperty('font-family', null);
-    const fontStyle = element.getElementStyleProperty('font-style', null);
     const textShadow = element.getElementStyleProperty('text-shadow', null);
 
     const test = new Test();
@@ -86,49 +116,35 @@ class QW_ACT_R37 extends AtomicRule {
     const parsedFG = this.parseRGBString(fgColor);
     if (parsedFG && parsedFG.alpha * opacity === 0) return;
 
-    // Image background → cannot be evaluated automatically.
-    if (this.isImage(bgColor)) {
-      this.emit(test, element, Verdict.WARNING, 'W2');
+    if (
+      this.evaluateNonSolidBackground({
+        test,
+        element,
+        background: bgColor,
+        text: elementText
+      })
+    )
       return;
-    }
-
-    // Gradient background.
-    const gradientMatch = bgColor.match(GRADIENT_REGEX);
-    if (gradientMatch) {
-      const text = elementText || placeholder || '';
-      if (this.isHumanLanguage(text)) {
-        this.evaluateGradient(test, element, gradientMatch[0], fgColor, opacity, fontSize, fontWeight, fontStyle, fontFamily, text);
-      } else {
-        this.emit(test, element, Verdict.PASSED, 'P2');
-      }
-      return;
-    }
 
     // Solid background.
-    const background = this.resolveSolidBackground(element, opacity);
-    if (background.kind === 'cantTell') {
-      this.emit(test, element, Verdict.WARNING, background.resultCode);
+    if (!parsedFG) return;
+    const colors = this.resolveSolidColors(element, parsedFG);
+    if (colors.kind === 'cantTell') {
+      this.emit(test, element, Verdict.WARNING, colors.resultCode);
       return;
     }
-    const parsedBG = background.color;
-
-    // NOTE: if the foreground colour can't be parsed, no result is emitted —
-    // kept as-is to avoid inventing a result code without a matching i18n entry.
-    if (!parsedFG) return;
-    parsedFG.alpha *= opacity;
 
     // NOTE: when fg === bg (contrast 1:1) the original rule emits no result.
     // Preserved intentionally; flip to an explicit F1 here if that contract
     // should change.
-    if (this.equals(parsedBG, parsedFG)) return;
+    if (this.equals(colors.background, colors.foreground)) return;
 
-    const textToVerify = elementText || placeholder || '';
-    if (!this.isHumanLanguage(textToVerify)) {
+    if (!this.isHumanLanguage(elementText)) {
       this.emit(test, element, Verdict.PASSED, 'P2');
       return;
     }
 
-    const contrastRatio = this.getContrast(parsedBG, parsedFG);
+    const contrastRatio = this.getContrast(colors.background, colors.foreground);
     const isValid = this.hasValidContrastRatio(contrastRatio, fontSize, this.isBold(fontWeight));
     this.emit(test, element, isValid ? Verdict.PASSED : Verdict.FAILED, isValid ? 'P1' : 'F1');
   }
@@ -137,14 +153,8 @@ class QW_ACT_R37 extends AtomicRule {
   // Applicability helpers
   // ---------------------------------------------------------------------------
 
-  /**
-   * Collects every selector that should be treated as "inside a disabled widget":
-   * the widget's accessible-name selector(s), its own selector, and its children's.
-   * Memoised on the identity of the source array so the expensive
-   * getAccessibleNameSelector call runs once per evaluation rather than per element.
-   */
-  private getDisabledSelectors(widgets: QWElement[] | undefined): Set<string> {
-    const cache = this.disabledSelectorCache;
+  private getDisabledLabelSelectors(widgets: QWElement[] | undefined): Set<string> {
+    const cache = this.disabledLabelCache;
     if (cache && cache.source === widgets) {
       return cache.selectors;
     }
@@ -161,19 +171,26 @@ class QW_ACT_R37 extends AtomicRule {
       } else if (Array.isArray(accNameSelectors)) {
         for (const selector of accNameSelectors) selectors.add(selector);
       }
-
-      selectors.add(widget.getElementSelector());
-      for (const child of widget.getElementChildren() ?? []) {
-        selectors.add(child.getElementSelector());
-      }
     }
 
-    this.disabledSelectorCache = { source: widgets, selectors };
+    this.disabledLabelCache = { source: widgets, selectors };
     return selectors;
   }
 
-  private isDisabledGroup(element: QWElement): boolean {
-    if (window.AccessibilityUtils.getElementRole(element) !== 'group') return false;
+  private hasDisabledAncestorOrLabel(element: QWElement, widgets: QWElement[] | undefined): boolean {
+    const disabledLabels = this.getDisabledLabelSelectors(widgets);
+    let current: QWElement | null = element;
+
+    while (current) {
+      if (disabledLabels.has(current.getElementSelector()) || this.isDisabledGroupOrWidget(current)) return true;
+      current = current.getElementParent();
+    }
+    return false;
+  }
+
+  private isDisabledGroupOrWidget(element: QWElement): boolean {
+    const role = window.AccessibilityUtils.getElementRole(element);
+    if (!role || !GROUP_OR_WIDGET_ROLES.has(role)) return false;
     const disabled = element.getElementAttribute('disabled') !== null;
     const ariaDisabled = element.getElementAttribute('aria-disabled') === 'true';
     return disabled || ariaDisabled;
@@ -194,7 +211,7 @@ class QW_ACT_R37 extends AtomicRule {
     if (trimmed === '' || trimmed === 'none') return false;
 
     for (const layer of this.splitShadowLayers(trimmed)) {
-      const lengths = layer.match(/-?\d*\.?\d+(px|rem|em)/g);
+      const lengths = layer.split(/\s+/).filter((token) => /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:px|rem|em)$/.test(token));
       // A valid shadow needs at least offset-x and offset-y; blur is optional.
       if (!lengths || lengths.length < 2) continue;
 
@@ -240,43 +257,41 @@ class QW_ACT_R37 extends AtomicRule {
   // Background resolution
   // ---------------------------------------------------------------------------
 
-  /**
-   * Resolves a solid (non-gradient, non-image) background for the element,
-   * walking up the ancestor chain through fully-transparent backgrounds and
-   * flattening any remaining alpha onto white.
-   *
-   * If an ancestor along the way has an image or gradient background, a solid
-   * colour can't be composed, so the result is "cantTell" (W2 / W3) rather than
-   * silently skipping past it onto a wrong colour.
-   */
-  private resolveSolidBackground(element: QWElement, opacity: number): BackgroundResolution {
-    // The element's own gradient/image background is handled before this point,
-    // so its background here is either a solid colour or transparent.
-    let parsed = this.parseRGBString(this.getBackground(element));
-    if (parsed) parsed.alpha *= opacity;
+  /** Resolves the rendered text and background pixels through ancestor opacity groups. */
+  private resolveSolidColors(element: QWElement, textColor: RGBColor): BackgroundResolution {
+    let background = { ...TRANSPARENT };
+    let foreground = { ...textColor };
+    let current: QWElement | null = element;
+    let isTarget = true;
 
-    let current = element;
-    while (!parsed || this.isFullyTransparent(parsed)) {
-      const parent = current.getElementParent();
-      if (!parent) break;
+    while (current) {
+      const layer = this.getBackground(current);
+      if (this.isImage(layer)) return { kind: 'cantTell', resultCode: 'W2' };
+      if (this.isGradient(layer)) return { kind: 'cantTell', resultCode: 'W3' };
 
-      const parentBg = this.getBackground(parent);
-      if (this.isImage(parentBg)) return { kind: 'cantTell', resultCode: 'W2' };
-      if (parentBg.match(GRADIENT_REGEX)) return { kind: 'cantTell', resultCode: 'W3' };
+      const layerColor = this.parseRGBString(layer);
+      if (!layerColor) return { kind: 'cantTell', resultCode: 'W3' };
 
-      const parentOpacity = parseFloat(parent.getElementStyleProperty('opacity', null) || '1');
-      parsed = this.parseRGBString(parentBg);
-      if (parsed) parsed.alpha *= parentOpacity;
-      current = parent;
+      if (isTarget) {
+        background = layerColor;
+        foreground = this.compositeColors(foreground, layerColor);
+        isTarget = false;
+      } else {
+        background = this.compositeColors(background, layerColor);
+        foreground = this.compositeColors(foreground, layerColor);
+      }
+
+      const opacity = this.parseOpacity(current.getElementStyleProperty('opacity', null));
+      background.alpha *= opacity;
+      foreground.alpha *= opacity;
+      current = current.getElementParent();
     }
 
-    if (!parsed || parsed.alpha === 0) {
-      parsed = { ...WHITE };
-    }
-    if (parsed.alpha < 1) {
-      parsed = this.flattenColors(parsed, WHITE);
-    }
-    return { kind: 'color', color: parsed };
+    return {
+      kind: 'color',
+      background: this.compositeColors(background, WHITE),
+      foreground: this.compositeColors(foreground, WHITE)
+    };
   }
 
   private getBackground(element: QWElement): string {
@@ -293,105 +308,30 @@ class QW_ACT_R37 extends AtomicRule {
     return lower.includes('.jpg') || lower.includes('.png') || lower.includes('.svg') || lower.includes('url(');
   }
 
-  // ---------------------------------------------------------------------------
-  // Gradient evaluation
-  // ---------------------------------------------------------------------------
+  private isGradient(background: string): boolean {
+    return background.toLowerCase().includes('gradient(');
+  }
 
-  private evaluateGradient(
-    test: Test,
-    element: QWElement,
-    parsedGradientString: string,
-    fgColor: string,
-    opacity: number,
-    fontSize: string,
-    fontWeight: string,
-    fontStyle: string,
-    fontFamily: string,
-    elementText: string
-  ): void {
-    // Non-linear gradients aren't supported → warn.
-    if (!parsedGradientString.startsWith('linear-gradient')) {
-      this.emit(test, element, Verdict.WARNING, 'W3');
-      return;
+  private parseOpacity(value: string | null): number {
+    const opacity = parseFloat(value ?? '1');
+    return Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1;
+  }
+
+  private evaluateNonSolidBackground(options: NonSolidEvaluation): boolean {
+    if (this.isImage(options.background)) {
+      this.emit(options.test, options.element, Verdict.WARNING, 'W2');
+      return true;
     }
+    if (!this.isGradient(options.background)) return false;
 
-    const colors = this.parseGradientString(parsedGradientString);
-    // Guard against an unparseable stop list (otherwise: crash on the
-    // text-size branch, or a false PASSED from an empty stop loop).
-    if (colors.length === 0) {
-      this.emit(test, element, Verdict.WARNING, 'W3');
-      return;
-    }
-
-    const parsedFG = this.parseRGBString(fgColor);
-    if (!parsedFG) {
-      this.emit(test, element, Verdict.WARNING, 'W3');
-      return;
-    }
-    parsedFG.alpha *= opacity;
-
-    const bold = this.isBold(fontWeight);
-    const stopsToCheck = this.gradientStopsToCheck(element, colors, fontSize, fontWeight, fontStyle, fontFamily, elementText);
-
-    const isValid = stopsToCheck.every((stop) =>
-      this.hasValidContrastRatio(this.getContrast(stop, parsedFG), fontSize, bold)
+    const humanLanguage = this.isHumanLanguage(options.text);
+    this.emit(
+      options.test,
+      options.element,
+      humanLanguage ? Verdict.WARNING : Verdict.PASSED,
+      humanLanguage ? 'W3' : 'P2'
     );
-
-    this.emit(test, element, isValid ? Verdict.PASSED : Verdict.FAILED, isValid ? 'P3' : 'F2');
-  }
-
-  /**
-   * Picks the gradient stops to test against. When the rendered text width can
-   * be determined we only need the start stop and the colour under the last
-   * character; otherwise we fall back to every parsed stop.
-   */
-  private gradientStopsToCheck(
-    element: QWElement,
-    colors: RGBColor[],
-    fontSize: string,
-    fontWeight: string,
-    fontStyle: string,
-    fontFamily: string,
-    elementText: string
-  ): RGBColor[] {
-    const textSize = this.getTextSize(
-      fontFamily.toLowerCase().replace(/['"]+/g, ''),
-      parseInt(fontSize.replace('px', ''), 10),
-      this.isBold(fontWeight),
-      fontStyle.toLowerCase().includes('italic'),
-      elementText
-    );
-
-    const elementWidth = parseInt((element.getElementStyleProperty('width', null) ?? '').replace('px', ''), 10);
-
-    if (textSize !== -1 && Number.isFinite(elementWidth) && elementWidth > 0) {
-      const lastCharRatio = textSize / elementWidth;
-      const lastCharColor = this.getColorInGradient(colors[0], colors[colors.length - 1], lastCharRatio);
-      return [colors[0], lastCharColor];
-    }
-    return colors;
-  }
-
-  private parseGradientString(gradient: string): RGBColor[] {
-    const regex = /rgb(a?)\((\d+), (\d+), (\d+)+(, +(\d)+)?\)/gm;
-    const matches = gradient.match(regex) ?? [];
-    const colors: RGBColor[] = [];
-    for (const stringColor of matches) {
-      const parsed = this.parseRGBString(stringColor);
-      if (parsed) colors.push(parsed);
-    }
-    return colors;
-  }
-
-  private getColorInGradient(fromColor: RGBColor, toColor: RGBColor, ratio: number): RGBColor {
-    // Clamp so an oversized last-char position can't extrapolate past the stops.
-    const r = Math.max(0, Math.min(1, ratio));
-    return {
-      red: fromColor.red + (toColor.red - fromColor.red) * r,
-      green: fromColor.green + (toColor.green - fromColor.green) * r,
-      blue: fromColor.blue + (toColor.blue - fromColor.blue) * r,
-      alpha: 1
-    };
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -403,27 +343,12 @@ class QW_ACT_R37 extends AtomicRule {
       return { red: 0, green: 0, blue: 0, alpha: 0 };
     }
 
-    const rgb = colorString.match(/^rgb\((\d+), (\d+), (\d+)\)/);
-    if (rgb) {
-      return { red: parseInt(rgb[1], 10), green: parseInt(rgb[2], 10), blue: parseInt(rgb[3], 10), alpha: 1.0 };
-    }
-
-    const rgba = colorString.match(/^rgba\((\d+), (\d+), (\d+), (\d*(\.\d+)?)\)/);
-    if (rgba) {
-      return {
-        red: parseInt(rgba[1], 10),
-        green: parseInt(rgba[2], 10),
-        blue: parseInt(rgba[3], 10),
-        alpha: Math.round(parseFloat(rgba[4]) * 100) / 100
-      };
-    }
-
     try {
       const srgb = new Color(colorString).to('srgb');
       return {
-        red: Math.round(srgb.coords[0] * 255),
-        green: Math.round(srgb.coords[1] * 255),
-        blue: Math.round(srgb.coords[2] * 255),
+        red: srgb.coords[0] * 255,
+        green: srgb.coords[1] * 255,
+        blue: srgb.coords[2] * 255,
         alpha: srgb.alpha ?? 1
       };
     } catch {
@@ -431,18 +356,19 @@ class QW_ACT_R37 extends AtomicRule {
     }
   }
 
-  private flattenColors(fg: RGBColor, bg: RGBColor): RGBColor {
-    const alpha = fg.alpha;
+  private compositeColors(fg: RGBColor, bg: RGBColor): RGBColor {
+    const alpha = fg.alpha + bg.alpha * (1 - fg.alpha);
+    if (alpha === 0) return { ...TRANSPARENT };
     return {
-      red: Math.round((1 - alpha) * bg.red + alpha * fg.red),
-      green: Math.round((1 - alpha) * bg.green + alpha * fg.green),
-      blue: Math.round((1 - alpha) * bg.blue + alpha * fg.blue),
-      alpha: fg.alpha + bg.alpha * (1 - fg.alpha)
+      red: (fg.red * fg.alpha + bg.red * bg.alpha * (1 - fg.alpha)) / alpha,
+      green: (fg.green * fg.alpha + bg.green * bg.alpha * (1 - fg.alpha)) / alpha,
+      blue: (fg.blue * fg.alpha + bg.blue * bg.alpha * (1 - fg.alpha)) / alpha,
+      alpha
     };
   }
 
   private getContrast(bg: RGBColor, fg: RGBColor): number {
-    const finalFG = fg.alpha < 1 ? this.flattenColors(fg, bg) : fg;
+    const finalFG = fg.alpha < 1 ? this.compositeColors(fg, bg) : fg;
     const L1 = this.getLuminance(bg);
     const L2 = this.getLuminance(finalFG);
     return (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
@@ -451,27 +377,24 @@ class QW_ACT_R37 extends AtomicRule {
   private getLuminance(c: RGBColor): number {
     const [r, g, b] = [c.red, c.green, c.blue].map((value) => {
       const v = value / 255;
-      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
     });
     return r * 0.2126 + g * 0.7152 + b * 0.0722;
   }
 
   private hasValidContrastRatio(contrast: number, fontSize: string, isBold: boolean): boolean {
     const size = parseFloat(fontSize);
-    const threshold = (isBold && size >= 18.66) || size >= 24 ? 3 : 4.5;
-    return contrast + 0.02 >= threshold;
+    const threshold = (isBold && size >= LARGE_BOLD_TEXT_PX) || size >= LARGE_TEXT_PX ? 3 : 4.5;
+    return contrast >= threshold;
   }
 
   private isBold(fontWeight: string): boolean {
-    return !!fontWeight && ['bold', 'bolder', '700', '800', '900'].includes(fontWeight);
+    const numericWeight = Number.parseFloat(fontWeight);
+    return Number.isFinite(numericWeight) ? numericWeight >= 700 : ['bold', 'bolder'].includes(fontWeight);
   }
 
   private equals(c1: RGBColor, c2: RGBColor): boolean {
     return c1.red === c2.red && c1.green === c2.green && c1.blue === c2.blue && c1.alpha === c2.alpha;
-  }
-
-  private isFullyTransparent(c: RGBColor): boolean {
-    return c.red === 0 && c.green === 0 && c.blue === 0 && c.alpha === 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -480,10 +403,6 @@ class QW_ACT_R37 extends AtomicRule {
 
   private isHumanLanguage(text: string): boolean {
     return window.DomUtils.isHumanLanguage(text);
-  }
-
-  private getTextSize(font: string, fontSize: number, bold: boolean, italic: boolean, text: string): number {
-    return window.DomUtils.getTextSize(font, fontSize, bold, italic, text);
   }
 
   // ---------------------------------------------------------------------------
