@@ -541,6 +541,236 @@ export class QWElement {
     return styles.getPropertyValue(property);
   }
 
+  /**
+   * Returns authored style values for a pseudo-element after the browser has
+   * resolved selector specificity, cascade layers, media queries and custom
+   * properties.
+   *
+   * Chromium currently returns the originating element's style from
+   * getComputedStyle(element, '::placeholder'). To avoid that false result we
+   * mirror matching pseudo-element declarations to temporary custom properties
+   * on the originating element and let the browser resolve their cascade.
+   */
+  public getElementPseudoStyleProperties(properties: string[], pseudoStyle: string): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const property of properties) result[property] = '';
+
+    const pseudoAliases = this.getPseudoStyleAliases(pseudoStyle);
+    if (pseudoAliases.length === 0) return result;
+
+    const root = this.element.getRootNode() as Document | ShadowRoot;
+    const probePrefix = '--qualweb-pseudo-style-probe-';
+    const probeRules = this.createPseudoStyleProbeRules(
+      this.getRootStyleSheets(root),
+      pseudoAliases,
+      properties,
+      probePrefix
+    );
+    if (probeRules === '') return result;
+
+    const ownerDocument = this.element.ownerDocument;
+    const style = ownerDocument.createElement('style');
+    style.setAttribute('data-qualweb-pseudo-style-probe', pseudoStyle);
+    style.textContent = probeRules;
+
+    try {
+      if (root.nodeType === Node.DOCUMENT_NODE) {
+        const documentRoot = root as Document;
+        (documentRoot.head ?? documentRoot.documentElement).appendChild(style);
+      } else {
+        (root as ShadowRoot).appendChild(style);
+      }
+
+      const computed = ownerDocument.defaultView?.getComputedStyle(this.element);
+      if (!computed) return result;
+      for (const property of properties) {
+        result[property] = computed.getPropertyValue(probePrefix + property).trim();
+      }
+      return result;
+    } finally {
+      style.remove();
+    }
+  }
+
+  private getPseudoStyleAliases(pseudoStyle: string): string[] {
+    if (pseudoStyle.toLowerCase() === '::placeholder') {
+      return [
+        '::placeholder',
+        '::-webkit-input-placeholder',
+        '::-moz-placeholder',
+        ':-moz-placeholder',
+        ':-ms-input-placeholder'
+      ];
+    }
+    return pseudoStyle.startsWith(':') ? [pseudoStyle] : [];
+  }
+
+  private getRootStyleSheets(root: Document | ShadowRoot): CSSStyleSheet[] {
+    return root.nodeType === Node.DOCUMENT_NODE
+      ? this.getDocumentStyleSheets(root as Document)
+      : this.getShadowRootStyleSheets(root as ShadowRoot);
+  }
+
+  private getDocumentStyleSheets(documentRoot: Document): CSSStyleSheet[] {
+    const styleSheets: CSSStyleSheet[] = [];
+    for (let index = 0; index < documentRoot.styleSheets.length; index++) {
+      const sheet = documentRoot.styleSheets.item(index);
+      if (sheet) styleSheets.push(sheet);
+    }
+    styleSheets.push(...(documentRoot.adoptedStyleSheets ?? []));
+    return styleSheets;
+  }
+
+  private getShadowRootStyleSheets(shadowRoot: ShadowRoot): CSSStyleSheet[] {
+    const styleSheets = Array.from(shadowRoot.querySelectorAll('style, link[rel="stylesheet"]'))
+      .map((node) => (node as HTMLStyleElement | HTMLLinkElement).sheet)
+      .filter((sheet): sheet is CSSStyleSheet => sheet !== null);
+    styleSheets.push(...(shadowRoot.adoptedStyleSheets ?? []));
+    return styleSheets;
+  }
+
+  private createPseudoStyleProbeRules(
+    styleSheets: CSSStyleSheet[],
+    pseudoAliases: string[],
+    properties: string[],
+    probePrefix: string
+  ): string {
+    let result = '';
+    for (const sheet of styleSheets) {
+      try {
+        result += this.createPseudoStyleProbeRuleList(sheet.cssRules, pseudoAliases, properties, probePrefix);
+      } catch {
+        // Cross-origin stylesheets cannot be inspected through CSSOM. The
+        // caller will fall back to inherited/originating-element styles.
+      }
+    }
+    return result;
+  }
+
+  private createPseudoStyleProbeRuleList(
+    rules: CSSRuleList,
+    pseudoAliases: string[],
+    properties: string[],
+    probePrefix: string
+  ): string {
+    let result = '';
+
+    for (let index = 0; index < rules.length; index++) {
+      const rule = rules.item(index);
+      if (!rule) continue;
+      result += this.createPseudoStyleProbeRule(rule, pseudoAliases, properties, probePrefix);
+    }
+
+    return result;
+  }
+
+  private createPseudoStyleProbeRule(
+    rule: CSSRule,
+    pseudoAliases: string[],
+    properties: string[],
+    probePrefix: string
+  ): string {
+    if ('selectorText' in rule && 'style' in rule) {
+      return this.createPseudoStyleProbeStyleRule(rule as CSSStyleRule, pseudoAliases, properties, probePrefix);
+    }
+    if ('href' in rule && 'styleSheet' in rule) {
+      return this.createPseudoStyleProbeImportRule(rule as CSSImportRule, pseudoAliases, properties, probePrefix);
+    }
+    return this.createPseudoStyleProbeGroupingRule(rule, pseudoAliases, properties, probePrefix);
+  }
+
+  private createPseudoStyleProbeStyleRule(
+    styleRule: CSSStyleRule,
+    pseudoAliases: string[],
+    properties: string[],
+    probePrefix: string
+  ): string {
+    const selectors = this.splitSelectorList(styleRule.selectorText)
+      .filter((selector) => pseudoAliases.some((pseudo) => selector.toLowerCase().includes(pseudo)))
+      .map((selector) => this.removePseudoStyle(selector, pseudoAliases));
+    if (selectors.length === 0) return '';
+
+    const declarations = properties
+      .map((property) => this.createPseudoStyleProbeDeclaration(styleRule.style, property, probePrefix))
+      .filter((declaration) => declaration !== '');
+    return declarations.length > 0 ? `${selectors.join(', ')} { ${declarations.join(' ')} }\n` : '';
+  }
+
+  private createPseudoStyleProbeDeclaration(style: CSSStyleDeclaration, property: string, probePrefix: string): string {
+    const value = style.getPropertyValue(property);
+    if (value === '') return '';
+    const priority = style.getPropertyPriority(property);
+    return `${probePrefix}${property}: ${value}${priority ? ' !important' : ''};`;
+  }
+
+  private createPseudoStyleProbeImportRule(
+    importRule: CSSImportRule,
+    pseudoAliases: string[],
+    properties: string[],
+    probePrefix: string
+  ): string {
+    if (!importRule.styleSheet) return '';
+    try {
+      const imported = this.createPseudoStyleProbeRuleList(
+        importRule.styleSheet.cssRules,
+        pseudoAliases,
+        properties,
+        probePrefix
+      );
+      if (imported === '' || importRule.media.length === 0) return imported;
+      return `@media ${importRule.media.mediaText} { ${imported} }\n`;
+    } catch {
+      // Cross-origin imports are inaccessible for the same reason as a
+      // cross-origin top-level stylesheet.
+      return '';
+    }
+  }
+
+  private createPseudoStyleProbeGroupingRule(
+    rule: CSSRule,
+    pseudoAliases: string[],
+    properties: string[],
+    probePrefix: string
+  ): string {
+    const groupingRule = rule as CSSRule & { cssRules?: CSSRuleList };
+    if (!groupingRule.cssRules) return '';
+    const nested = this.createPseudoStyleProbeRuleList(groupingRule.cssRules, pseudoAliases, properties, probePrefix);
+    const openingBrace = rule.cssText.indexOf('{');
+    return nested !== '' && openingBrace !== -1 ? `${rule.cssText.slice(0, openingBrace).trim()} { ${nested} }\n` : '';
+  }
+
+  private splitSelectorList(selectorList: string): string[] {
+    const selectors: string[] = [];
+    let current = '';
+    let depth = 0;
+
+    for (const character of selectorList) {
+      if (character === '(' || character === '[') depth++;
+      else if (character === ')' || character === ']') depth = Math.max(0, depth - 1);
+
+      if (character === ',' && depth === 0) {
+        if (current.trim() !== '') selectors.push(current.trim());
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+    if (current.trim() !== '') selectors.push(current.trim());
+    return selectors;
+  }
+
+  private removePseudoStyle(selector: string, pseudoAliases: string[]): string {
+    let result = selector;
+    for (const pseudo of pseudoAliases) {
+      result = result.replace(new RegExp(this.escapeRegExp(pseudo), 'gi'), '');
+    }
+    return result;
+  }
+
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   public getElementTagName(): string {
     return this.element.tagName.toLowerCase();
   }

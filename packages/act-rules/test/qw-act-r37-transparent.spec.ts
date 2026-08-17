@@ -119,10 +119,12 @@ describe('QW-ACT-R37 transparent text (issue #262)', function () {
     expect(outcome).to.equal('passed');
   });
 
-  it('is inapplicable when a form field has no text-node child', async function () {
+  it('tests a rendered placeholder even though it is not a text-node child', async function () {
     this.timeout(0);
-    const { outcome } = await outcomeOf(`<input placeholder="Rendered placeholder" />`);
-    expect(outcome).to.equal('inapplicable');
+    const { outcome } = await outcomeOf(
+      `<style>input::placeholder{color:#000;opacity:1}</style><input style="background:#fff" placeholder="Rendered placeholder" />`
+    );
+    expect(outcome).to.equal('passed');
   });
 
   it('is inapplicable for deeply nested text in a disabled widget', async function () {
