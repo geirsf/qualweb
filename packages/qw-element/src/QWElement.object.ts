@@ -6,6 +6,16 @@ export interface QWVisualDirection {
   deltaX: number;
   deltaY: number; 
 }
+
+export interface QWPseudoStyleResolution {
+  properties: Record<string, string>;
+  hasInaccessibleStyles: boolean;
+}
+
+interface PseudoStyleProbeState {
+  hasInaccessibleStyles: boolean;
+}
+
 export class QWElement {
   private readonly element: Element;
   private readonly elementsCSSRules?: Map<Element, CSSProperties>;
@@ -551,22 +561,24 @@ export class QWElement {
    * mirror matching pseudo-element declarations to temporary custom properties
    * on the originating element and let the browser resolve their cascade.
    */
-  public getElementPseudoStyleProperties(properties: string[], pseudoStyle: string): Record<string, string> {
+  public getElementPseudoStyleProperties(properties: string[], pseudoStyle: string): QWPseudoStyleResolution {
     const result: Record<string, string> = {};
     for (const property of properties) result[property] = '';
 
     const pseudoAliases = this.getPseudoStyleAliases(pseudoStyle);
-    if (pseudoAliases.length === 0) return result;
+    if (pseudoAliases.length === 0) return { properties: result, hasInaccessibleStyles: false };
 
     const root = this.element.getRootNode() as Document | ShadowRoot;
     const probePrefix = '--qualweb-pseudo-style-probe-';
+    const state: PseudoStyleProbeState = { hasInaccessibleStyles: false };
     const probeRules = this.createPseudoStyleProbeRules(
       this.getRootStyleSheets(root),
       pseudoAliases,
       properties,
-      probePrefix
+      probePrefix,
+      state
     );
-    if (probeRules === '') return result;
+    if (probeRules === '') return { properties: result, hasInaccessibleStyles: state.hasInaccessibleStyles };
 
     const ownerDocument = this.element.ownerDocument;
     const style = ownerDocument.createElement('style');
@@ -582,11 +594,11 @@ export class QWElement {
       }
 
       const computed = ownerDocument.defaultView?.getComputedStyle(this.element);
-      if (!computed) return result;
+      if (!computed) return { properties: result, hasInaccessibleStyles: state.hasInaccessibleStyles };
       for (const property of properties) {
         result[property] = computed.getPropertyValue(probePrefix + property).trim();
       }
-      return result;
+      return { properties: result, hasInaccessibleStyles: state.hasInaccessibleStyles };
     } finally {
       style.remove();
     }
@@ -615,33 +627,48 @@ export class QWElement {
     const styleSheets: CSSStyleSheet[] = [];
     for (let index = 0; index < documentRoot.styleSheets.length; index++) {
       const sheet = documentRoot.styleSheets.item(index);
-      if (sheet) styleSheets.push(sheet);
+      if (sheet && this.isStyleSheetActive(sheet, documentRoot.defaultView)) styleSheets.push(sheet);
     }
-    styleSheets.push(...(documentRoot.adoptedStyleSheets ?? []));
+    styleSheets.push(
+      ...(documentRoot.adoptedStyleSheets ?? []).filter((sheet) =>
+        this.isStyleSheetActive(sheet, documentRoot.defaultView)
+      )
+    );
     return styleSheets;
   }
 
   private getShadowRootStyleSheets(shadowRoot: ShadowRoot): CSSStyleSheet[] {
+    const view = shadowRoot.ownerDocument.defaultView;
     const styleSheets = Array.from(shadowRoot.querySelectorAll('style, link[rel="stylesheet"]'))
       .map((node) => (node as HTMLStyleElement | HTMLLinkElement).sheet)
-      .filter((sheet): sheet is CSSStyleSheet => sheet !== null);
-    styleSheets.push(...(shadowRoot.adoptedStyleSheets ?? []));
+      .filter((sheet): sheet is CSSStyleSheet => sheet !== null && this.isStyleSheetActive(sheet, view));
+    styleSheets.push(
+      ...(shadowRoot.adoptedStyleSheets ?? []).filter((sheet) => this.isStyleSheetActive(sheet, view))
+    );
     return styleSheets;
+  }
+
+  private isStyleSheetActive(styleSheet: CSSStyleSheet, view: Window | null): boolean {
+    if (styleSheet.disabled) return false;
+    const media = styleSheet.media.mediaText.trim();
+    return media === '' || view === null || view.matchMedia(media).matches;
   }
 
   private createPseudoStyleProbeRules(
     styleSheets: CSSStyleSheet[],
     pseudoAliases: string[],
     properties: string[],
-    probePrefix: string
+    probePrefix: string,
+    state: PseudoStyleProbeState
   ): string {
     let result = '';
     for (const sheet of styleSheets) {
       try {
-        result += this.createPseudoStyleProbeRuleList(sheet.cssRules, pseudoAliases, properties, probePrefix);
+        result += this.createPseudoStyleProbeRuleList(sheet.cssRules, pseudoAliases, properties, probePrefix, state);
       } catch {
         // Cross-origin stylesheets cannot be inspected through CSSOM. The
-        // caller will fall back to inherited/originating-element styles.
+        // caller must avoid returning a definitive contrast result.
+        state.hasInaccessibleStyles = true;
       }
     }
     return result;
@@ -651,14 +678,15 @@ export class QWElement {
     rules: CSSRuleList,
     pseudoAliases: string[],
     properties: string[],
-    probePrefix: string
+    probePrefix: string,
+    state: PseudoStyleProbeState
   ): string {
     let result = '';
 
     for (let index = 0; index < rules.length; index++) {
       const rule = rules.item(index);
       if (!rule) continue;
-      result += this.createPseudoStyleProbeRule(rule, pseudoAliases, properties, probePrefix);
+      result += this.createPseudoStyleProbeRule(rule, pseudoAliases, properties, probePrefix, state);
     }
 
     return result;
@@ -668,15 +696,40 @@ export class QWElement {
     rule: CSSRule,
     pseudoAliases: string[],
     properties: string[],
-    probePrefix: string
+    probePrefix: string,
+    state: PseudoStyleProbeState
   ): string {
     if ('selectorText' in rule && 'style' in rule) {
-      return this.createPseudoStyleProbeStyleRule(rule as CSSStyleRule, pseudoAliases, properties, probePrefix);
+      const styleRule = rule as CSSStyleRule;
+      let result = this.createPseudoStyleProbeStyleRule(styleRule, pseudoAliases, properties, probePrefix);
+      const nestedRules = (styleRule as CSSStyleRule & { cssRules?: CSSRuleList }).cssRules;
+      if (nestedRules?.length) {
+        const nested = this.createPseudoStyleProbeRuleList(
+          nestedRules,
+          pseudoAliases,
+          properties,
+          probePrefix,
+          state
+        );
+        if (nested !== '') {
+          const parentSelectors = this.splitSelectorList(styleRule.selectorText).map((selector) =>
+            this.removePseudoStyle(selector, pseudoAliases)
+          );
+          result += `${parentSelectors.join(', ')} { ${nested} }\n`;
+        }
+      }
+      return result;
     }
     if ('href' in rule && 'styleSheet' in rule) {
-      return this.createPseudoStyleProbeImportRule(rule as CSSImportRule, pseudoAliases, properties, probePrefix);
+      return this.createPseudoStyleProbeImportRule(
+        rule as CSSImportRule,
+        pseudoAliases,
+        properties,
+        probePrefix,
+        state
+      );
     }
-    return this.createPseudoStyleProbeGroupingRule(rule, pseudoAliases, properties, probePrefix);
+    return this.createPseudoStyleProbeGroupingRule(rule, pseudoAliases, properties, probePrefix, state);
   }
 
   private createPseudoStyleProbeStyleRule(
@@ -707,7 +760,8 @@ export class QWElement {
     importRule: CSSImportRule,
     pseudoAliases: string[],
     properties: string[],
-    probePrefix: string
+    probePrefix: string,
+    state: PseudoStyleProbeState
   ): string {
     if (!importRule.styleSheet) return '';
     try {
@@ -715,13 +769,15 @@ export class QWElement {
         importRule.styleSheet.cssRules,
         pseudoAliases,
         properties,
-        probePrefix
+        probePrefix,
+        state
       );
       if (imported === '' || importRule.media.length === 0) return imported;
       return `@media ${importRule.media.mediaText} { ${imported} }\n`;
     } catch {
       // Cross-origin imports are inaccessible for the same reason as a
       // cross-origin top-level stylesheet.
+      state.hasInaccessibleStyles = true;
       return '';
     }
   }
@@ -730,11 +786,18 @@ export class QWElement {
     rule: CSSRule,
     pseudoAliases: string[],
     properties: string[],
-    probePrefix: string
+    probePrefix: string,
+    state: PseudoStyleProbeState
   ): string {
     const groupingRule = rule as CSSRule & { cssRules?: CSSRuleList };
     if (!groupingRule.cssRules) return '';
-    const nested = this.createPseudoStyleProbeRuleList(groupingRule.cssRules, pseudoAliases, properties, probePrefix);
+    const nested = this.createPseudoStyleProbeRuleList(
+      groupingRule.cssRules,
+      pseudoAliases,
+      properties,
+      probePrefix,
+      state
+    );
     const openingBrace = rule.cssText.indexOf('{');
     return nested !== '' && openingBrace !== -1 ? `${rule.cssText.slice(0, openingBrace).trim()} { ${nested} }\n` : '';
   }

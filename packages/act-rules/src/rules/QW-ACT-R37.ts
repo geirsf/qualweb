@@ -30,6 +30,7 @@ interface RenderedStyles {
   fontWeight: string;
   opacity: number;
   textShadow: string;
+  hasInaccessiblePseudoStyles: boolean;
 }
 
 /** Result of resolving an element's effective solid background. */
@@ -119,20 +120,22 @@ class QW_ACT_R37 extends AtomicRule {
     const textShadow = renderedStyles.textShadow;
 
     const test = new Test();
+    const parsedFG = this.parseRGBString(fgColor);
 
-    // Text shadow that could obscure contrast → cannot be evaluated automatically.
+    // Element opacity applies to text, pseudo-elements and their shadows.
+    if (opacity === 0) return;
+
+    if (renderedStyles.hasInaccessiblePseudoStyles) {
+      this.emit(test, element, Verdict.WARNING, 'W4');
+      return;
+    }
+
+    if (this.handleTransparentText(test, element, parsedFG, opacity * pseudoOpacity, textShadow)) return;
+
     if (this.hasDisqualifyingShadow(textShadow, parseFloat(fontSize))) {
       this.emit(test, element, Verdict.WARNING, 'W1');
       return;
     }
-
-    // Fully transparent text (color alpha × opacity === 0) is not visible —
-    // per the ACT definition of visibility, making it fully transparent
-    // changes no rendered pixels — so the rule is inapplicable. This is the
-    // common screen-reader-only technique from issue #262. Checked after the
-    // text-shadow warning because a shadow can still render such text legible.
-    const parsedFG = this.parseRGBString(fgColor);
-    if (parsedFG && parsedFG.alpha * pseudoOpacity * opacity === 0) return;
 
     if (
       this.evaluateNonSolidBackground({
@@ -153,9 +156,9 @@ class QW_ACT_R37 extends AtomicRule {
       return;
     }
 
-    // NOTE: when fg === bg (contrast 1:1) the original rule emits no result.
-    // Preserved intentionally; flip to an explicit F1 here if that contract
-    // should change.
+    // ACT applicability requires visible text, defined as content whose
+    // rendering changes pixels. Identical foreground and background colors do
+    // not change pixels and are therefore outside this atomic rule.
     if (this.equals(colors.background, colors.foreground)) return;
 
     if (!this.isHumanLanguage(renderedText.text)) {
@@ -220,16 +223,18 @@ class QW_ACT_R37 extends AtomicRule {
   }
 
   private getRenderedStyles(element: QWElement, renderedText: RenderedText): RenderedStyles {
-    const pseudoStyles = renderedText.pseudoStyle
+    const pseudoResolution = renderedText.pseudoStyle
       ? element.getElementPseudoStyleProperties(PLACEHOLDER_STYLE_PROPERTIES, renderedText.pseudoStyle)
       : undefined;
+    const pseudoStyles = pseudoResolution?.properties;
     const styleElement = renderedText.styleElement ?? element;
     return {
       foreground: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'color'),
       fontSize: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'font-size'),
       fontWeight: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'font-weight'),
       opacity: renderedText.pseudoStyle ? this.getPseudoOpacity(element, pseudoStyles) : 1,
-      textShadow: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'text-shadow')
+      textShadow: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'text-shadow'),
+      hasInaccessiblePseudoStyles: pseudoResolution?.hasInaccessibleStyles ?? false
     };
   }
 
@@ -323,6 +328,66 @@ class QW_ACT_R37 extends AtomicRule {
       if (blur > 0 || horizontal > 1 || vertical > 1) return true;
     }
     return false;
+  }
+
+  /**
+   * Handles text that cannot paint its normal foreground. Element and
+   * pseudo-element opacity apply to the complete group, including shadows. An
+   * independently coloured shadow can still paint a transparent glyph, but
+   * its effective contrast cannot be determined reliably here.
+   */
+  private handleTransparentText(
+    test: Test,
+    element: QWElement,
+    foreground: RGBColor | undefined,
+    effectiveOpacity: number,
+    textShadow: string | null
+  ): boolean {
+    if (effectiveOpacity === 0) return true;
+    if (foreground === undefined || foreground.alpha !== 0) return false;
+
+    if (this.hasVisibleTextShadow(textShadow, foreground)) {
+      this.emit(test, element, Verdict.WARNING, 'W1');
+    }
+    return true;
+  }
+
+  /**
+   * Returns true when at least one shadow layer can paint visible pixels. A
+   * layer without an explicit colour uses the element's current text colour.
+   */
+  private hasVisibleTextShadow(textShadow: string | null, currentColor: RGBColor): boolean {
+    if (!textShadow) return false;
+    const trimmed = textShadow.trim();
+    if (trimmed === '' || trimmed === 'none') return false;
+
+    return this.splitShadowLayers(trimmed).some((layer) => {
+      const explicitColor = this.splitShadowComponents(layer)
+        .map((component) => this.parseRGBString(component))
+        .find((color): color is RGBColor => color !== undefined);
+      return (explicitColor ?? currentColor).alpha > 0;
+    });
+  }
+
+  /** Splits one shadow layer on whitespace outside colour functions. */
+  private splitShadowComponents(layer: string): string[] {
+    const components: string[] = [];
+    let depth = 0;
+    let current = '';
+
+    for (const char of layer) {
+      if (char === '(') depth++;
+      else if (char === ')') depth = Math.max(0, depth - 1);
+
+      if (/\s/.test(char) && depth === 0) {
+        if (current) components.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current) components.push(current);
+    return components;
   }
 
   /** Splits a text-shadow value into layers on top-level commas only. */
@@ -450,7 +515,7 @@ class QW_ACT_R37 extends AtomicRule {
         red: srgb.coords[0] * 255,
         green: srgb.coords[1] * 255,
         blue: srgb.coords[2] * 255,
-        alpha: srgb.alpha ?? 1
+        alpha: Number(srgb.alpha ?? 1)
       };
     } catch {
       return undefined;

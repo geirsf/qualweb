@@ -2,6 +2,8 @@ import { expect } from 'chai';
 import { launchBrowser } from './util';
 import { LocaleFetcher } from '@qualweb/locale';
 import { Browser } from 'puppeteer';
+import { createServer, Server } from 'http';
+import { AddressInfo } from 'net';
 
 interface EvaluationReport {
   assertions: Record<string, { metadata: { outcome: string; warning: number } }>;
@@ -9,13 +11,28 @@ interface EvaluationReport {
 
 describe('QW-ACT-R37 rendered form control text', function () {
   let browser: Browser;
+  let cssServer: Server;
+  let crossOriginCssUrl: string;
 
   before(async () => {
     browser = await launchBrowser();
+    cssServer = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/css' });
+      response.end('input::placeholder { color:#aaa; opacity:1 }');
+    });
+    await new Promise<void>((resolve, reject) => {
+      cssServer.once('error', reject);
+      cssServer.listen(0, '127.0.0.1', resolve);
+    });
+    const address = cssServer.address() as AddressInfo;
+    crossOriginCssUrl = `http://127.0.0.1:${address.port}/placeholder.css`;
   });
 
   after(async () => {
     await browser.close();
+    await new Promise<void>((resolve, reject) => {
+      cssServer.close((error) => (error ? reject(error) : resolve()));
+    });
   });
 
   async function outcomeOf(snippet: string): Promise<{ outcome: string; warning: number }> {
@@ -126,6 +143,46 @@ describe('QW-ACT-R37 rendered form control text', function () {
         `<input placeholder="Responsive placeholder" style="color:#000;background:#fff">`
     );
     expect(outcome).to.equal('failed');
+  });
+
+  it('ignores placeholder rules from a non-matching stylesheet media attribute', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<style>input::placeholder { color:#000; opacity:1 }</style>` +
+        `<style media="(max-width:1px)">input::placeholder { color:#aaa }</style>` +
+        `<input placeholder="Inactive stylesheet" style="color:#000;background:#fff">`
+    );
+    expect(outcome).to.equal('passed');
+  });
+
+  it('ignores placeholder rules from a disabled stylesheet', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<style>input::placeholder { color:#000; opacity:1 }</style>` +
+        `<style id="disabled-styles">input::placeholder { color:#aaa }</style>` +
+        `<input placeholder="Disabled stylesheet" style="color:#000;background:#fff">` +
+        `<script>document.querySelector('#disabled-styles').sheet.disabled = true;</script>`
+    );
+    expect(outcome).to.equal('passed');
+  });
+
+  it('resolves placeholder styles in native CSS nesting', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<style>input { &::placeholder { color:#aaa; opacity:1 } }</style>` +
+        `<input placeholder="Nested placeholder" style="color:#000;background:#fff">`
+    );
+    expect(outcome).to.equal('failed');
+  });
+
+  it('warns when a cross-origin stylesheet could affect placeholder styles', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<link rel="stylesheet" href="${crossOriginCssUrl}">` +
+        `<input placeholder="Cross-origin placeholder" style="color:#000;background:#fff">`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
   });
 
   it('supports prefixed placeholder selectors', async function () {
