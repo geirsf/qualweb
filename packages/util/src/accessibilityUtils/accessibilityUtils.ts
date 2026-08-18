@@ -7,6 +7,7 @@ import getAccessibleNameSVGFunction from './getAccessibleNameSVG';
 import isDataTableFunction from './isDataTable';
 import isElementControlFunction from './isElementControl';
 import isElementWidgetFunction from './isElementWidget';
+import isElementGroupOrWidgetFunction from './isElementGroupOrWidget';
 import getElementRoleFunction from './getElementRole';
 import getElementRoleANameFunction from './getElementRoleAName';
 import getImplicitRoleFunction from './getImplicitRole';
@@ -126,6 +127,11 @@ class AccessibilityUtils {
   @Cache('AcceUtils.isElementWidget')
   public static isElementWidget(element: QWElement): boolean {
     return isElementWidgetFunction(element);
+  }
+
+  @Cache('AcceUtils.isElementGroupOrWidget')
+  public static isElementGroupOrWidget(element: QWElement): boolean {
+    return isElementGroupOrWidgetFunction(element);
   }
 
   @FullMethodCache('AcceUtils.getImplicitRole')
