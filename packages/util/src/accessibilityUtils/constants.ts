@@ -75,6 +75,43 @@ const widgetRoles = [
   'textbox',
   'treeitem'
 ];
+
+// Concrete WAI-ARIA roles whose superclass is group or widget.
+const groupOrWidgetRoles = [
+  'group',
+  'button',
+  'checkbox',
+  'columnheader',
+  'combobox',
+  'grid',
+  'gridcell',
+  'link',
+  'listbox',
+  'menu',
+  'menubar',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'option',
+  'progressbar',
+  'radio',
+  'radiogroup',
+  'row',
+  'rowheader',
+  'scrollbar',
+  'searchbox',
+  'separator',
+  'slider',
+  'spinbutton',
+  'switch',
+  'tab',
+  'tablist',
+  'textbox',
+  'toolbar',
+  'tree',
+  'treegrid',
+  'treeitem'
+];
 const nameFromContentElements = [
   'button',
   'h1',
@@ -242,6 +279,7 @@ export {
   controlRoles,
   widgetElements,
   widgetRoles,
+  groupOrWidgetRoles,
   nameFromContentElements,
   nameFromContentRoles
 };

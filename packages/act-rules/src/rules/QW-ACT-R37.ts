@@ -46,43 +46,6 @@ const NON_TEXT_INPUT_TYPES = new Set(['hidden', 'range', 'color', 'checkbox', 'r
 const PLACEHOLDER_INPUT_TYPES = new Set(['text', 'search', 'tel', 'url', 'email', 'password', 'number']);
 const PLACEHOLDER_STYLE_PROPERTIES = ['color', 'opacity', 'font-size', 'font-weight', 'text-shadow'];
 
-/** Concrete WAI-ARIA roles whose superclass is group or widget. */
-const GROUP_OR_WIDGET_ROLES = new Set([
-  'group',
-  'button',
-  'checkbox',
-  'columnheader',
-  'combobox',
-  'grid',
-  'gridcell',
-  'link',
-  'listbox',
-  'menu',
-  'menubar',
-  'menuitem',
-  'menuitemcheckbox',
-  'menuitemradio',
-  'option',
-  'progressbar',
-  'radio',
-  'radiogroup',
-  'row',
-  'rowheader',
-  'scrollbar',
-  'searchbox',
-  'separator',
-  'slider',
-  'spinbutton',
-  'switch',
-  'tab',
-  'tablist',
-  'textbox',
-  'toolbar',
-  'tree',
-  'treegrid',
-  'treeitem'
-]);
-
 /**
  * QW-ACT-R37 — text has sufficient colour contrast.
  *
@@ -295,8 +258,7 @@ class QW_ACT_R37 extends AtomicRule {
   }
 
   private isDisabledGroupOrWidget(element: QWElement): boolean {
-    const role = window.AccessibilityUtils.getElementRole(element);
-    if (!role || !GROUP_OR_WIDGET_ROLES.has(role)) return false;
+    if (!window.AccessibilityUtils.isElementGroupOrWidget(element)) return false;
     const disabled = element.getElementAttribute('disabled') !== null;
     const ariaDisabled = element.getElementAttribute('aria-disabled') === 'true';
     return disabled || ariaDisabled;
