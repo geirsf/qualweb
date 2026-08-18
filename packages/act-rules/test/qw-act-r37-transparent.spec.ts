@@ -10,11 +10,12 @@ interface EvaluationReport {
 /**
  * Regression tests for https://github.com/qualweb/qualweb/issues/262
  *
- * Text with a fully transparent foreground (color alpha × opacity === 0) is
- * not visible per the ACT definition of visibility, so QW-ACT-R37 must not
- * report a contrast failure for it. This covers the common screen-reader-only
- * technique of hiding text with `color: transparent` (and `opacity: 0`, which
- * additionally exercises the fixed opacity check in DomUtils.isElementVisible).
+ * Text whose complete painted group has zero opacity is not visible per the
+ * ACT definition of visibility. A transparent foreground is likewise
+ * inapplicable when no independently coloured text shadow paints the glyph;
+ * a visible shadow instead requires manual contrast verification. This covers
+ * the common screen-reader-only techniques based on `color: transparent` and
+ * `opacity: 0`.
  */
 describe('QW-ACT-R37 transparent text (issue #262)', function () {
   let browser: Browser;
@@ -97,6 +98,22 @@ describe('QW-ACT-R37 transparent text (issue #262)', function () {
     expect(outcome).to.equal('inapplicable');
   });
 
+  it('is inapplicable when an ancestor has opacity: 0', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<div style="opacity:0"><p style="color:#aaa;background:#fff">Invisible through ancestor opacity</p></div>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
+  it('still evaluates text with fractional opacity', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<p style="color:#aaa;background:#fff;opacity:.5">Partially transparent text</p>`
+    );
+    expect(outcome).to.equal('failed');
+  });
+
   it('still warns for transparent text with a text-shadow that may render it legible', async function () {
     this.timeout(0);
     const { warning } = await outcomeOf(
@@ -105,12 +122,45 @@ describe('QW-ACT-R37 transparent text (issue #262)', function () {
     expect(warning).to.equal(1);
   });
 
+  it('warns when a compact opaque text shadow renders transparent text', async function () {
+    this.timeout(0);
+    const { warning } = await outcomeOf(
+      `<p style="color: transparent; text-shadow: 0 0 0 #000">Shadow-rendered text</p>`
+    );
+    expect(warning).to.equal(1);
+  });
+
+  it('is inapplicable when opacity hides both text and its shadow', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="opacity: 0; text-shadow: 2px 2px 4px #000">Fully hidden text and shadow</p>`
+    );
+    expect(outcome).to.equal('inapplicable');
+    expect(warning).to.equal(0);
+  });
+
+  it('is inapplicable when a transparent shadow inherits a transparent current color', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<p style="color: transparent; text-shadow: 0 0 0 currentColor">Invisible text and shadow</p>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
   it('still fails genuinely low-contrast text', async function () {
     this.timeout(0);
     const { outcome } = await outcomeOf(
       `<p style="color: #999; background-color: #fff">Genuinely low contrast text</p>`
     );
     expect(outcome).to.equal('failed');
+  });
+
+  it('is inapplicable when identical foreground and background colors change no pixels', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<p style="color:#fff;background:#fff">Invisible low-contrast text</p>`
+    );
+    expect(outcome).to.equal('inapplicable');
   });
 
   it('still passes high-contrast text', async function () {
