@@ -362,6 +362,7 @@ export const nb: Locale = {
         W2: 'Element har bilde som bakgrunn.',
         W3: 'Element har en gradient som ikke kan verifiseres automatisk.',
         W4: 'Stilene for plassholderteksten kunne ikke fastslås automatisk.',
+        W5: 'Elementet bruker en tekstgjengivelseseffekt som må verifiseres manuelt.',
         F1: 'Element har målt kontrast under minstekravet.',
         F2: 'Element har en gradient med målt kontrast under minstekravet.'
       }
