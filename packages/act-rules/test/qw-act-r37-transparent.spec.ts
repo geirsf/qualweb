@@ -147,6 +147,60 @@ describe('QW-ACT-R37 transparent text (issue #262)', function () {
     expect(outcome).to.equal('inapplicable');
   });
 
+  it('warns when a background clipped to transparent text can paint the glyphs', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:transparent;background:#000;background-clip:text">Background-painted text</p>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when a text stroke can paint otherwise transparent glyphs', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:transparent;-webkit-text-stroke:1px #000">Stroke-painted text</p>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when text fill can paint otherwise transparent glyphs', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:transparent;-webkit-text-fill-color:#000">Fill-painted text</p>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('is inapplicable when background-clip text has no visible background paint', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:transparent;background:transparent;background-clip:text">Unpainted text</p>`
+    );
+    expect(outcome).to.equal('inapplicable');
+    expect(warning).to.equal(0);
+  });
+
+  it('is inapplicable when a text stroke is itself transparent', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:transparent;-webkit-text-stroke:1px transparent">Unpainted text</p>`
+    );
+    expect(outcome).to.equal('inapplicable');
+    expect(warning).to.equal(0);
+  });
+
+  it('is inapplicable when opacity hides alternative text paint', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:transparent;-webkit-text-stroke:1px #000;opacity:0">Hidden painted text</p>`
+    );
+    expect(outcome).to.equal('inapplicable');
+    expect(warning).to.equal(0);
+  });
+
   it('still fails genuinely low-contrast text', async function () {
     this.timeout(0);
     const { outcome } = await outcomeOf(
@@ -201,6 +255,63 @@ describe('QW-ACT-R37 transparent text (issue #262)', function () {
     expect(outcome).to.equal('inapplicable');
   });
 
+  it('is inapplicable for descendant text in a disabled DPUB widget role', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<div role="doc-backlink" aria-disabled="true" style="color:#aaa;background:#fff">Disabled backlink</div>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
+  it('is inapplicable for descendant text in a disabled graphics group role', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<div role="graphics-object" aria-disabled="true" style="color:#aaa;background:#fff">Disabled graphic</div>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
+  it('uses the first valid role token after invalid tokens', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<div role="invalid button" aria-disabled="true" style="color:#aaa;background:#fff">Disabled button</div>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
+  it('does not skip a valid non-widget role to use a later widget role', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<div role="heading button" aria-level="2" aria-disabled="true" style="color:#aaa;background:#fff">Enabled heading</div>`
+    );
+    expect(outcome).to.equal('failed');
+  });
+
+  it('does not treat separator as a group or widget role', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<div role="separator" aria-disabled="true" style="color:#aaa;background:#fff">Enabled separator</div>`
+    );
+    expect(outcome).to.equal('failed');
+  });
+
+  it('falls back to the implicit widget role when every explicit role token is invalid', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<button role="invalid" disabled style="color:#aaa;background:#fff">Disabled native button</button>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
+  it('excludes an external label referenced by a disabled extension widget', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<label id="label" style="color:#aaa;background:#fff">Disabled backlink label</label>` +
+        `<div role="doc-backlink" aria-labelledby="label" aria-disabled="true"></div>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
   it('composites a semi-transparent background over its actual ancestor', async function () {
     this.timeout(0);
     const { outcome } = await outcomeOf(
@@ -249,18 +360,117 @@ describe('QW-ACT-R37 transparent text (issue #262)', function () {
     expect(warning).to.equal(1);
   });
 
-  it('warns for a horizontal gradient that appears to have sufficient contrast', async function () {
+  it('passes a supported horizontal gradient with sufficient contrast', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<p style="color:#333;background:linear-gradient(to right,#fff,#00f);width:500px">Some text in English</p>`
+    );
+    expect(outcome).to.equal('passed');
+  });
+
+  it('fails a supported horizontal gradient with insufficient contrast', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<p style="color:#aaa;background:linear-gradient(to right,#fff,#00f);width:300px">Some text in English</p>`
+    );
+    expect(outcome).to.equal('failed');
+  });
+
+  it('uses the rendered text position for a right-aligned horizontal gradient', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<p style="color:#333;background:linear-gradient(to right,#fff,#00f);width:1000px;text-align:right">Text</p>`
+    );
+    expect(outcome).to.equal('failed');
+  });
+
+  it('is inapplicable when a flat gradient is identical to the foreground', async function () {
+    this.timeout(0);
+    const { outcome } = await outcomeOf(
+      `<p style="color:#fff;background:linear-gradient(to right,#fff,#fff);width:500px">Invisible text</p>`
+    );
+    expect(outcome).to.equal('inapplicable');
+  });
+
+  it('warns when gradient channel directions prevent a monotonic proof', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:#000;background:linear-gradient(to right,#f00,#00f);width:500px">Mixed channels</p>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when the text spans passing and failing parts of a gradient', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<input value="Text" style="color:#000;background:linear-gradient(to right,#fff,#000);width:500px">`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when endpoint contrast passes but the gradient crosses the foreground luminance', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<input value="Text" style="color:#767676;background:linear-gradient(to right,#000,#fff);width:500px">`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when group opacity prevents a reliable gradient proof', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:#333;background:linear-gradient(to right,#fff,#00f);width:500px;opacity:.9">Some text in English</p>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when a transform prevents reliable gradient geometry', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<p style="color:#333;background:linear-gradient(to right,#fff,#00f);width:500px;transform:scale(.9)">Some text in English</p>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when an overlapping sibling can replace the gradient pixels', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<div style="position:relative;width:500px">` +
+        `<p style="color:#333;background:linear-gradient(to right,#fff,#00f);width:500px">Some text in English</p>` +
+        `<span style="position:absolute;inset:0;background:#fff"></span>` +
+        `</div>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns when generated content can paint over the gradient text', async function () {
+    this.timeout(0);
+    const { outcome, warning } = await outcomeOf(
+      `<style>.generated::after{content:"";position:absolute;inset:0;background:#fff}</style>` +
+        `<p class="generated" style="position:relative;color:#333;background:linear-gradient(to right,#fff,#00f);width:500px">Some text in English</p>`
+    );
+    expect(outcome).to.equal('warning');
+    expect(warning).to.equal(1);
+  });
+
+  it('warns for an unsupported gradient direction', async function () {
     this.timeout(0);
     const { warning } = await outcomeOf(
-      `<p style="color:#333;background:linear-gradient(to right,#fff,#00f);width:500px">Some text in English</p>`
+      `<p style="color:#000;background:linear-gradient(to bottom,#fff,#000)">Vertical gradient</p>`
     );
     expect(warning).to.equal(1);
   });
 
-  it('warns for a horizontal gradient that appears to have insufficient contrast', async function () {
+  it('warns when a gradient is inherited from an ancestor background', async function () {
     this.timeout(0);
     const { warning } = await outcomeOf(
-      `<p style="color:#aaa;background:linear-gradient(to right,#fff,#00f);width:300px">Some text in English</p>`
+      `<div style="background:linear-gradient(to right,#fff,#000)"><p style="color:#000;background:transparent">Ancestor gradient</p></div>`
     );
     expect(warning).to.equal(1);
   });

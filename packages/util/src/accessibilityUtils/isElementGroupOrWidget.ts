@@ -1,8 +1,9 @@
 import type { QWElement } from '@qualweb/qw-element';
 import { groupOrWidgetRoles } from './constants';
+import getElementConcreteRole from './getElementConcreteRole';
 
 function isElementGroupOrWidget(element: QWElement): boolean {
-  const role = window.AccessibilityUtils.getElementRole(element);
+  const role = getElementConcreteRole(element);
   return role !== null && groupOrWidgetRoles.includes(role);
 }
 
