@@ -8,8 +8,13 @@ const concreteRoleSet = new Set([
   ...extensionRoles
 ]);
 
-// A presentational role is ignored when the element must remain exposed to the
-// accessibility tree. In that case its native/implicit semantics win.
+/**
+ * Return whether a presentational role must yield to native semantics.
+ *
+ * @param element - Element whose focusability and ARIA attributes are evaluated.
+ * @param role - First valid concrete explicit role token.
+ * @returns True when `none` or `presentation` conflicts with exposed semantics.
+ */
 function hasPresentationalRoleConflict(element: QWElement, role: string): boolean {
   if (role !== 'none' && role !== 'presentation') return false;
   return (
@@ -26,6 +31,9 @@ function hasPresentationalRoleConflict(element: QWElement, role: string): boolea
  * This therefore implements the relevant ARIA fallback rules locally:
  * role tokens are ordered fallbacks, abstract/unknown tokens do not count,
  * and native semantics apply when no explicit concrete role can be used.
+ *
+ * @param element - Element whose explicit and implicit semantics are resolved.
+ * @returns First usable concrete role, implicit role, or null when none applies.
  */
 function getElementConcreteRole(element: QWElement): string | null {
   const explicitRole = element.getElementAttribute('role');
