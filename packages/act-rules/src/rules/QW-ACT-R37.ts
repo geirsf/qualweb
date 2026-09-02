@@ -69,7 +69,11 @@ class QW_ACT_R37 extends AtomicRule {
   /** Memoised accessible-name roots for disabled widgets. */
   private disabledLabelCache?: { source: unknown; selectors: Set<string> };
 
-  /** Evaluate one candidate element and emit a result only when it is applicable. */
+  /**
+   * Evaluate one candidate element and emit a result only when it is applicable.
+   *
+   * @param element - Candidate element supplied by the ACT rule runner.
+   */
   @ElementExists
   @ElementIsHTMLElement
   @ElementIsNot(['html', 'head', 'body', 'script', 'style', 'meta'])
@@ -171,6 +175,9 @@ class QW_ACT_R37 extends AtomicRule {
    * expose their rendered text through DOM properties rather than text-node
    * children, so values changed at runtime are intentionally preferred over
    * their original attributes.
+   *
+   * @param element - Candidate element whose painted text is requested.
+   * @returns Rendered text together with its pseudo/style source.
    */
   private getRenderedText(element: QWElement): RenderedText {
     const nodeName = element.getElementTagName();
@@ -181,7 +188,12 @@ class QW_ACT_R37 extends AtomicRule {
     return { text: element.getElementOwnText().trim(), pseudoStyle: null };
   }
 
-  /** Return the value, default label or placeholder currently painted by an input. */
+  /**
+   * Return the value, default label or placeholder currently painted by an input.
+   *
+   * @param element - Input element whose rendered text is requested.
+   * @returns Rendered input text and any pseudo-element style source.
+   */
   private getInputText(element: QWElement): RenderedText {
     const inputType = (element.getElementProperty('type') || 'text').toLowerCase();
     if (NON_TEXT_INPUT_TYPES.has(inputType)) return { text: '', pseudoStyle: null };
@@ -199,7 +211,12 @@ class QW_ACT_R37 extends AtomicRule {
       : { text: '', pseudoStyle: null };
   }
 
-  /** Return the live textarea value, or its placeholder when the value is empty. */
+  /**
+   * Return the live textarea value, or its placeholder when the value is empty.
+   *
+   * @param element - Textarea element whose rendered text is requested.
+   * @returns Live value or placeholder with its style source.
+   */
   private getTextAreaText(element: QWElement): RenderedText {
     const value = element.getElementProperty('value').trim();
     if (value !== '') return { text: value, pseudoStyle: null };
@@ -208,7 +225,12 @@ class QW_ACT_R37 extends AtomicRule {
     return placeholder !== '' ? { text: placeholder, pseudoStyle: '::placeholder' } : { text: '', pseudoStyle: null };
   }
 
-  /** Return the label currently painted for the selected option. */
+  /**
+   * Return the label currently painted for the selected option.
+   *
+   * @param element - Select element whose collapsed label is requested.
+   * @returns Selected label and the option supplying its foreground styles.
+   */
   private getSelectText(element: QWElement): RenderedText {
     const selectedOption = element.getElement('option:checked');
     const selectedText = selectedOption
@@ -219,7 +241,13 @@ class QW_ACT_R37 extends AtomicRule {
     return { text: selectedText, pseudoStyle: null, styleElement: selectedOption ?? undefined };
   }
 
-  /** Resolve styles from the source that actually paints the rendered text. */
+  /**
+   * Resolve styles from the source that actually paints the rendered text.
+   *
+   * @param element - Control or text container supplying the background.
+   * @param renderedText - Text descriptor identifying pseudo/option style sources.
+   * @returns Foreground, typography, opacity and shadow used for evaluation.
+   */
   private getRenderedStyles(element: QWElement, renderedText: RenderedText): RenderedStyles {
     const pseudoResolution = renderedText.pseudoStyle
       ? element.getElementPseudoStyleProperties(PLACEHOLDER_STYLE_PROPERTIES, renderedText.pseudoStyle)
@@ -236,7 +264,14 @@ class QW_ACT_R37 extends AtomicRule {
     };
   }
 
-  /** Resolve a pseudo-element declaration or fall back to its originating element. */
+  /**
+   * Resolve a pseudo-element declaration or fall back to its originating element.
+   *
+   * @param element - Element supplying computed fallback styles.
+   * @param pseudoStyles - Resolved authored pseudo-element declarations, if any.
+   * @param property - CSS property to resolve.
+   * @returns Effective authored or computed property value.
+   */
   private getRenderedStyleProperty(
     element: QWElement,
     pseudoStyles: Record<string, string> | undefined,
@@ -251,7 +286,13 @@ class QW_ACT_R37 extends AtomicRule {
       : element.getElementStyleProperty(property, null);
   }
 
-  /** Resolve placeholder opacity, including CSS-wide keyword behaviour. */
+  /**
+   * Resolve placeholder opacity, including CSS-wide keyword behaviour.
+   *
+   * @param element - Originating form control supplying inherited opacity.
+   * @param pseudoStyles - Resolved authored placeholder declarations, if any.
+   * @returns Normalised placeholder opacity in the range zero to one.
+   */
   private getPseudoOpacity(element: QWElement, pseudoStyles: Record<string, string> | undefined): number {
     const value = pseudoStyles?.opacity?.trim().toLowerCase();
     if (value === 'inherit') {
@@ -265,6 +306,9 @@ class QW_ACT_R37 extends AtomicRule {
    * Collect accessible-name source elements for disabled widgets once per run.
    * Without this, an external <label> could fail contrast even though the text
    * only labels an inapplicable disabled control.
+   *
+   * @param widgets - Disabled widgets collected for the current page.
+   * @returns Selectors for elements contributing their accessible names.
    */
   private getDisabledLabelSelectors(widgets: QWElement[] | undefined): Set<string> {
     const cache = this.disabledLabelCache;
@@ -290,7 +334,13 @@ class QW_ACT_R37 extends AtomicRule {
     return selectors;
   }
 
-  /** Check both DOM ancestry and accessible-name relationships. */
+  /**
+   * Check both DOM ancestry and accessible-name relationships.
+   *
+   * @param element - Candidate text container.
+   * @param widgets - Disabled widgets collected for the current page.
+   * @returns True when the candidate belongs to disabled content.
+   */
   private hasDisabledAncestorOrLabel(element: QWElement, widgets: QWElement[] | undefined): boolean {
     const disabledLabels = this.getDisabledLabelSelectors(widgets);
     let current: QWElement | null = element;
@@ -302,7 +352,12 @@ class QW_ACT_R37 extends AtomicRule {
     return false;
   }
 
-  /** Return whether the element is a semantically disabled group or widget. */
+  /**
+   * Return whether the element is a semantically disabled group or widget.
+   *
+   * @param element - Element whose role and disabled state are evaluated.
+   * @returns True when group/widget semantics and disabled state are both present.
+   */
   private isDisabledGroupOrWidget(element: QWElement): boolean {
     if (!window.AccessibilityUtils.isElementGroupOrWidget(element)) return false;
     const disabled = element.getElementAttribute('disabled') !== null;
@@ -318,6 +373,10 @@ class QW_ACT_R37 extends AtomicRule {
    * given without a blur radius (e.g. "3px 3px"), and px/em/rem length units.
    * Colour functions such as rgba(...) — whose commas would otherwise split a
    * layer apart — are respected.
+   *
+   * @param textShadow - Computed text-shadow declaration.
+   * @param fontSizePx - Computed font size used to resolve relative lengths.
+   * @returns True when the shadow prevents reliable automatic contrast evaluation.
    */
   private hasDisqualifyingShadow(textShadow: string | null, fontSizePx: number): boolean {
     if (!textShadow) return false;
@@ -343,6 +402,13 @@ class QW_ACT_R37 extends AtomicRule {
    * pseudo-element opacity apply to the complete group, including shadows. An
    * independently coloured shadow can still paint a transparent glyph, but
    * its effective contrast cannot be determined reliably here.
+   *
+   * @param test - Result object used when an alternative paint source requires a warning.
+   * @param element - Element whose transparent foreground is evaluated.
+   * @param foreground - Parsed normal foreground colour, if parseable.
+   * @param effectiveOpacity - Combined element and rendered-text opacity.
+   * @param textShadow - Computed text-shadow declaration.
+   * @returns True when transparent-text handling completed applicability evaluation.
    */
   private handleTransparentText(
     test: Test,
@@ -369,6 +435,9 @@ class QW_ACT_R37 extends AtomicRule {
    * Transparent CSS `color` does not guarantee invisible glyphs. Text fill,
    * text stroke and a background clipped to the text can paint independently;
    * their pixel contrast needs manual verification.
+   *
+   * @param element - Element whose alternative text paint is inspected.
+   * @returns True when a fill, stroke or clipped background can paint glyphs.
    */
   private hasAlternativeVisibleTextPaint(element: QWElement): boolean {
     // Chromium exposes these legacy-prefixed properties as computed styles;
@@ -391,6 +460,10 @@ class QW_ACT_R37 extends AtomicRule {
   /**
    * Returns true when at least one shadow layer can paint visible pixels. A
    * layer without an explicit colour uses the element's current text colour.
+   *
+   * @param textShadow - Computed text-shadow declaration.
+   * @param currentColor - Parsed current text colour used by colourless shadow layers.
+   * @returns True when at least one shadow layer has non-zero alpha.
    */
   private hasVisibleTextShadow(textShadow: string | null, currentColor: RGBColor): boolean {
     if (!textShadow) return false;
@@ -405,7 +478,12 @@ class QW_ACT_R37 extends AtomicRule {
     });
   }
 
-  /** Splits one shadow layer on whitespace outside colour functions. */
+  /**
+   * Split one shadow layer on whitespace outside colour functions.
+   *
+   * @param layer - One text-shadow layer.
+   * @returns Top-level colour and length components.
+   */
   private splitShadowComponents(layer: string): string[] {
     const components: string[] = [];
     let depth = 0;
@@ -426,7 +504,12 @@ class QW_ACT_R37 extends AtomicRule {
     return components;
   }
 
-  /** Splits a text-shadow value into layers on top-level commas only. */
+  /**
+   * Split a text-shadow value into layers on top-level commas only.
+   *
+   * @param value - Complete computed text-shadow declaration.
+   * @returns Individual shadow layers in source order.
+   */
   private splitShadowLayers(value: string): string[] {
     const layers: string[] = [];
     let depth = 0;
@@ -449,6 +532,10 @@ class QW_ACT_R37 extends AtomicRule {
   /**
    * Convert a px/em/rem length to pixels. Computed styles are usually already
    * in px; em uses the element font-size, while rem assumes a 16px root.
+   *
+   * @param length - CSS length using px, em or rem.
+   * @param fontSizePx - Element font size used to resolve em units.
+   * @returns Length expressed in CSS pixels.
    */
   private shadowLengthToPx(length: string, fontSizePx: number): number {
     const numeric = parseFloat(length);
@@ -467,6 +554,11 @@ class QW_ACT_R37 extends AtomicRule {
    * CSS opacity applies after an element and its descendants are composited as
    * a group. Carrying both accumulated colours upward preserves that ordering;
    * multiplying only the foreground alpha would produce incorrect contrast.
+   *
+   * @param element - Target element whose paint stack is resolved.
+   * @param textColor - Parsed foreground colour before ancestor compositing.
+   * @param targetBackground - Proven target-layer pixel used by gradient evaluation.
+   * @returns Resolved opaque colours or a manual-review reason.
    */
   private resolveSolidColors(
     element: QWElement,
@@ -510,7 +602,13 @@ class QW_ACT_R37 extends AtomicRule {
     };
   }
 
-  /** Resolve one background layer, preserving the reason when it cannot be automated. */
+  /**
+   * Resolve one background layer, preserving the reason when it cannot be automated.
+   *
+   * @param element - Element supplying the background layer.
+   * @param suppliedColor - Proven replacement pixel for the target gradient layer.
+   * @returns Solid layer colour or an image/gradient manual-review reason.
+   */
   private resolveBackgroundLayer(element: QWElement, suppliedColor?: RGBColor): BackgroundLayerResolution {
     if (suppliedColor) return { kind: 'color', color: { ...suppliedColor } };
 
@@ -522,7 +620,12 @@ class QW_ACT_R37 extends AtomicRule {
     return color ? { kind: 'color', color } : { kind: 'cantTell', resultCode: 'W3' };
   }
 
-  /** Return the uppermost authored background source relevant to contrast. */
+  /**
+   * Return the uppermost authored background source relevant to contrast.
+   *
+   * @param element - Element whose computed background is inspected.
+   * @returns Background image when present, otherwise its colour/background value.
+   */
   private getBackground(element: QWElement): string {
     // background-image paints above background-color. Returning it first forces
     // image/gradient handling instead of accidentally evaluating the colour
@@ -535,18 +638,33 @@ class QW_ACT_R37 extends AtomicRule {
       : element.getElementStyleProperty('background', null);
   }
 
-  /** Return whether a CSS background value contains an image URL. */
+  /**
+   * Return whether a CSS background value contains an image URL.
+   *
+   * @param background - Computed CSS background value.
+   * @returns True when the value contains a supported image indicator or URL.
+   */
   private isImage(background: string): boolean {
     const lower = background.toLowerCase();
     return lower.includes('.jpg') || lower.includes('.png') || lower.includes('.svg') || lower.includes('url(');
   }
 
-  /** Return whether a CSS background value contains any gradient function. */
+  /**
+   * Return whether a CSS background value contains any gradient function.
+   *
+   * @param background - Computed CSS background value.
+   * @returns True when the value contains a CSS gradient function.
+   */
   private isGradient(background: string): boolean {
     return background.toLowerCase().includes('gradient(');
   }
 
-  /** Parse and clamp CSS opacity, defaulting invalid or absent values to one. */
+  /**
+   * Parse and clamp CSS opacity, defaulting invalid or absent values to one.
+   *
+   * @param value - Computed opacity value.
+   * @returns Normalised opacity in the range zero to one.
+   */
   private parseOpacity(value: string | null): number {
     const opacity = parseFloat(value ?? '1');
     return Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1;
@@ -555,7 +673,8 @@ class QW_ACT_R37 extends AtomicRule {
   /**
    * Evaluate image/gradient backgrounds.
    *
-   * @returns true when the background was non-solid and fully handled; false
+   * @param options - Element, paint and typography data required for evaluation.
+   * @returns True when the background was non-solid and fully handled; false
    * when the caller should continue through the solid-colour path.
    */
   private evaluateNonSolidBackground(options: NonSolidEvaluation): boolean {
@@ -648,6 +767,9 @@ class QW_ACT_R37 extends AtomicRule {
    * Stop positions, transparency, repeating gradients and other directions
    * change the mapping between layout coordinates and colour. They remain W3
    * until that mapping is modelled explicitly.
+   *
+   * @param gradient - Computed CSS gradient value.
+   * @returns Two opaque endpoint colours when the supported syntax is proven.
    */
   private parseSupportedGradient(gradient: string): [RGBColor, RGBColor] | undefined {
     const trimmed = gradient.trim();
@@ -663,7 +785,12 @@ class QW_ACT_R37 extends AtomicRule {
     return from && to && from.alpha === 1 && to.alpha === 1 ? [from, to] : undefined;
   }
 
-  /** Split a CSS argument list without splitting commas inside colour functions. */
+  /**
+   * Split a CSS argument list without splitting commas inside colour functions.
+   *
+   * @param value - CSS function argument text.
+   * @returns Top-level arguments in source order.
+   */
   private splitTopLevelCommaList(value: string): string[] {
     const parts: string[] = [];
     let depth = 0;
@@ -688,6 +815,9 @@ class QW_ACT_R37 extends AtomicRule {
    * Component-wise monotonic sRGB interpolation also has monotonic relative
    * luminance. Mixed channel directions need fuller colour-space analysis and
    * therefore remain manual-review cases.
+   *
+   * @param colors - Gradient endpoint colours.
+   * @returns True when all sRGB channels move in the same direction.
    */
   private hasMonotonicRGBInterpolation(colors: [RGBColor, RGBColor]): boolean {
     const deltas = [
@@ -703,6 +833,9 @@ class QW_ACT_R37 extends AtomicRule {
    * Text-node ranges give the actual layout position, including alignment,
    * indentation and wrapping. Form-control text has no DOM range, so the whole
    * padding box is used as a safe superset.
+   *
+   * @param element - Element whose gradient and text geometry are mapped.
+   * @returns Normalised horizontal text interval, or undefined when not provable.
    */
   private getGradientTextInterval(element: QWElement): [number, number] | undefined {
     // These computed defaults make the gradient line match the padding box.
@@ -747,6 +880,9 @@ class QW_ACT_R37 extends AtomicRule {
   /**
    * Reject paint effects that invalidate the affine colour/geometry model.
    * Returning false here never creates a pass or failure; it falls back to W3.
+   *
+   * @param element - Gradient target whose paint stack is inspected.
+   * @returns True when no unsupported paint or overlap can affect the proof.
    */
   private hasReliableGradientPaintStack(element: QWElement): boolean {
     // Descendants may paint between the gradient and the target text. Their
@@ -761,7 +897,12 @@ class QW_ACT_R37 extends AtomicRule {
     return true;
   }
 
-  /** Return whether an element applies paint/compositing effects outside the gradient model. */
+  /**
+   * Return whether an element applies effects outside the gradient model.
+   *
+   * @param element - Target or ancestor whose computed paint styles are inspected.
+   * @returns True when opacity, transforms, filters, blending or zoom are unsupported.
+   */
   private hasUnsupportedPaintEffect(element: QWElement): boolean {
     const expectedStyles: Array<[string, string]> = [
       ['transform', 'none'],
@@ -777,14 +918,25 @@ class QW_ACT_R37 extends AtomicRule {
     return this.parseOpacity(element.getElementStyleProperty('opacity', null)) !== 1 || hasUnexpectedStyle || hasZoom;
   }
 
-  /** Return whether either generated pseudo-element can contribute painted content. */
+  /**
+   * Return whether either generated pseudo-element can contribute painted content.
+   *
+   * @param element - Element whose generated content is inspected.
+   * @returns True when ::before or ::after has a non-empty content value.
+   */
   private hasGeneratedContentLayer(element: QWElement): boolean {
     return ['::before', '::after'].some((pseudo) =>
       this.hasGeneratedContent(element, pseudo as '::before' | '::after')
     );
   }
 
-  /** Return whether one generated pseudo-element has a non-empty computed content value. */
+  /**
+   * Return whether one generated pseudo-element has non-empty computed content.
+   *
+   * @param element - Element owning the pseudo-element.
+   * @param pseudo - Generated pseudo-element to inspect.
+   * @returns True when the pseudo-element may contribute painted content.
+   */
   private hasGeneratedContent(element: QWElement, pseudo: '::before' | '::after'): boolean {
     const content = element.getElementStyleProperty('content', pseudo).trim().toLowerCase();
     return content !== '' && content !== 'none' && content !== 'normal';
@@ -794,6 +946,9 @@ class QW_ACT_R37 extends AtomicRule {
    * Overlapping siblings can replace the background pixels under the text.
    * Rejecting any overlap is conservative with respect to stacking order, but
    * prevents a definitive result when that order has not been modelled.
+   *
+   * @param element - Gradient target whose sibling geometry is inspected.
+   * @returns True when a sibling at any ancestor level intersects the target.
    */
   private hasPotentiallyOverlappingSibling(element: QWElement): boolean {
     const target = element.getBoundingBox();
@@ -812,7 +967,13 @@ class QW_ACT_R37 extends AtomicRule {
     return false;
   }
 
-  /** Return whether two non-empty layout rectangles have a positive-area intersection. */
+  /**
+   * Return whether two non-empty layout rectangles have a positive-area intersection.
+   *
+   * @param first - Target rectangle.
+   * @param second - Potentially overlapping rectangle.
+   * @returns True when both axes overlap by a positive amount.
+   */
   private rectanglesOverlap(first: DOMRect, second: DOMRect): boolean {
     if (second.width <= 0 || second.height <= 0) return false;
     const intersectsHorizontally = first.left < second.right && first.right > second.left;
@@ -820,7 +981,12 @@ class QW_ACT_R37 extends AtomicRule {
     return intersectsHorizontally && intersectsVertically;
   }
 
-  /** Return whether all endpoint backgrounds lie on one side of foreground luminance. */
+  /**
+   * Return whether all endpoint backgrounds lie on one side of foreground luminance.
+   *
+   * @param colors - Resolved foreground/background pairs at interval endpoints.
+   * @returns True when the interval cannot cross the foreground luminance.
+   */
   private isLuminanceIntervalOnOneSide(
     colors: Array<{ background: RGBColor; foreground: RGBColor }>
   ): boolean {
@@ -830,7 +996,14 @@ class QW_ACT_R37 extends AtomicRule {
     return differences.every((difference) => difference >= 0) || differences.every((difference) => difference <= 0);
   }
 
-  /** Interpolate one sRGB colour at a normalised horizontal gradient position. */
+  /**
+   * Interpolate one sRGB colour at a normalised horizontal gradient position.
+   *
+   * @param from - Gradient start colour.
+   * @param to - Gradient end colour.
+   * @param ratio - Normalised horizontal position from zero to one.
+   * @returns Interpolated sRGB colour.
+   */
   private getColorInGradient(from: RGBColor, to: RGBColor, ratio: number): RGBColor {
     return {
       red: from.red + (to.red - from.red) * ratio,
@@ -844,7 +1017,12 @@ class QW_ACT_R37 extends AtomicRule {
   // Colour maths
   // ---------------------------------------------------------------------------
 
-  /** Parse a CSS colour into unpremultiplied sRGB channels and alpha. */
+  /**
+   * Parse a CSS colour into unpremultiplied sRGB channels and alpha.
+   *
+   * @param colorString - Computed CSS colour value.
+   * @returns Parsed sRGB colour, transparent fallback, or undefined on failure.
+   */
   private parseRGBString(colorString: string): RGBColor | undefined {
     if (!colorString || colorString === 'transparent' || colorString === 'none') {
       return { red: 0, green: 0, blue: 0, alpha: 0 };
@@ -865,7 +1043,13 @@ class QW_ACT_R37 extends AtomicRule {
     }
   }
 
-  /** Composite foreground over background using the source-over operation. */
+  /**
+   * Composite foreground over background using the source-over operation.
+   *
+   * @param fg - Foreground colour.
+   * @param bg - Background colour.
+   * @returns Source-over composite with unpremultiplied channels.
+   */
   private compositeColors(fg: RGBColor, bg: RGBColor): RGBColor {
     // Standard source-over alpha compositing. Channels stay unpremultiplied in
     // RGBColor, hence the division by the resulting alpha.
@@ -879,7 +1063,13 @@ class QW_ACT_R37 extends AtomicRule {
     };
   }
 
-  /** Calculate the WCAG contrast ratio after compositing translucent foreground. */
+  /**
+   * Calculate the WCAG contrast ratio after compositing translucent foreground.
+   *
+   * @param bg - Resolved background colour.
+   * @param fg - Resolved foreground colour.
+   * @returns Unrounded WCAG contrast ratio.
+   */
   private getContrast(bg: RGBColor, fg: RGBColor): number {
     const finalFG = fg.alpha < 1 ? this.compositeColors(fg, bg) : fg;
     const L1 = this.getLuminance(bg);
@@ -887,7 +1077,12 @@ class QW_ACT_R37 extends AtomicRule {
     return (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
   }
 
-  /** Calculate WCAG relative luminance for an sRGB colour. */
+  /**
+   * Calculate WCAG relative luminance for an sRGB colour.
+   *
+   * @param c - sRGB colour whose luminance is required.
+   * @returns Relative luminance in the range zero to one.
+   */
   private getLuminance(c: RGBColor): number {
     const [r, g, b] = [c.red, c.green, c.blue].map((value) => {
       const v = value / 255;
@@ -896,7 +1091,14 @@ class QW_ACT_R37 extends AtomicRule {
     return r * 0.2126 + g * 0.7152 + b * 0.0722;
   }
 
-  /** Apply the exact WCAG 1.4.3 threshold for normal or large text. */
+  /**
+   * Apply the exact WCAG 1.4.3 threshold for normal or large text.
+   *
+   * @param contrast - Unrounded contrast ratio.
+   * @param fontSize - Computed font size in CSS pixels.
+   * @param isBold - Whether the computed font weight meets the bold threshold.
+   * @returns True when the applicable 3:1 or 4.5:1 threshold is met.
+   */
   private hasValidContrastRatio(contrast: number, fontSize: string, isBold: boolean): boolean {
     const size = parseFloat(fontSize);
     // Computed font sizes are CSS pixels. 14pt and 18pt are converted once in
@@ -905,13 +1107,24 @@ class QW_ACT_R37 extends AtomicRule {
     return contrast >= threshold;
   }
 
-  /** Return whether a computed font weight meets the WCAG bold threshold. */
+  /**
+   * Return whether a computed font weight meets the WCAG bold threshold.
+   *
+   * @param fontWeight - Computed numeric or keyword font weight.
+   * @returns True for weights of at least 700 or equivalent bold keywords.
+   */
   private isBold(fontWeight: string): boolean {
     const numericWeight = Number.parseFloat(fontWeight);
     return Number.isFinite(numericWeight) ? numericWeight >= 700 : ['bold', 'bolder'].includes(fontWeight);
   }
 
-  /** Compare two resolved colours without rounding their channels. */
+  /**
+   * Compare two resolved colours without rounding their channels.
+   *
+   * @param c1 - First resolved colour.
+   * @param c2 - Second resolved colour.
+   * @returns True when all channels and alpha are exactly equal.
+   */
   private equals(c1: RGBColor, c2: RGBColor): boolean {
     return c1.red === c2.red && c1.green === c2.green && c1.blue === c2.blue && c1.alpha === c2.alpha;
   }
@@ -920,7 +1133,12 @@ class QW_ACT_R37 extends AtomicRule {
   // DomUtils passthroughs
   // ---------------------------------------------------------------------------
 
-  /** Delegate QualWeb's existing human-language heuristic. */
+  /**
+   * Delegate QualWeb's existing human-language heuristic.
+   *
+   * @param text - Rendered text to classify.
+   * @returns True when the text is considered human language.
+   */
   private isHumanLanguage(text: string): boolean {
     return window.DomUtils.isHumanLanguage(text);
   }
@@ -929,7 +1147,14 @@ class QW_ACT_R37 extends AtomicRule {
   // Result emission
   // ---------------------------------------------------------------------------
 
-  /** Finalise and register one applicable result for the candidate element. */
+  /**
+   * Finalise and register one applicable result for the candidate element.
+   *
+   * @param test - Mutable rule result to finalise.
+   * @param element - Element associated with the result.
+   * @param verdict - Passed, failed or warning verdict.
+   * @param resultCode - Localised result-code key.
+   */
   private emit(test: Test, element: QWElement, verdict: Verdict, resultCode: string): void {
     // Returning from execute without calling emit is how AtomicRule represents
     // an inapplicable target; every emitted Test is therefore a real outcome.
