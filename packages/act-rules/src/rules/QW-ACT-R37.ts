@@ -11,6 +11,17 @@ interface RGBColor {
   alpha: number;
 }
 
+interface NonSolidEvaluation {
+  test: Test;
+  element: QWElement;
+  background: string;
+  text: string;
+  foreground: RGBColor | undefined;
+  fontSize: string;
+  fontWeight: string;
+  textShadow: string;
+}
+
 /** Result of resolving an element's effective solid background. */
 type BackgroundResolution =
   | { kind: 'color'; background: RGBColor; foreground: RGBColor }
@@ -25,11 +36,11 @@ const TRANSPARENT: RGBColor = { red: 0, green: 0, blue: 0, alpha: 0 };
 const LARGE_BOLD_TEXT_PX = (14 * 96) / 72;
 const LARGE_TEXT_PX = (18 * 96) / 72;
 const INPUT_TAGS = ['input', 'select', 'textarea'];
-const GRADIENT_REGEX = /((\w-?)*gradient.*)/gm;
 
 /**
  * Resolve solid text contrast through ancestor backgrounds and opacity groups.
- * Gradient evaluation and form-control targeting use separate paths.
+ * Prove supported horizontal gradient contrast over the rendered text interval;
+ * unsupported paint or geometry requires manual review.
  */
 class QW_ACT_R37 extends AtomicRule {
   private disabledLabelCache?: { source: unknown; selectors: Set<string> };
@@ -58,8 +69,6 @@ class QW_ACT_R37 extends AtomicRule {
     const opacity = this.parseOpacity(element.getElementStyleProperty('opacity', null));
     const fontSize = element.getElementStyleProperty('font-size', null);
     const fontWeight = element.getElementStyleProperty('font-weight', null);
-    const fontFamily = element.getElementStyleProperty('font-family', null);
-    const fontStyle = element.getElementStyleProperty('font-style', null);
     const textShadow = element.getElementStyleProperty('text-shadow', null);
 
     const test = new Test();
@@ -71,23 +80,16 @@ class QW_ACT_R37 extends AtomicRule {
       return;
     }
 
-    // Image background → cannot be evaluated automatically.
-    if (this.isImage(bgColor)) {
-      this.emit(test, element, Verdict.WARNING, 'W2');
-      return;
-    }
-
-    // Gradient background.
-    const gradientMatch = bgColor.match(GRADIENT_REGEX);
-    if (gradientMatch) {
-      const text = elementText || placeholder || '';
-      if (this.isHumanLanguage(text)) {
-        this.evaluateGradient(test, element, gradientMatch[0], fgColor, opacity, fontSize, fontWeight, fontStyle, fontFamily, text);
-      } else {
-        this.emit(test, element, Verdict.PASSED, 'P2');
-      }
-      return;
-    }
+    if (this.evaluateNonSolidBackground({
+      test,
+      element,
+      background: bgColor,
+      text: elementText || placeholder || '',
+      foreground: parsedFG,
+      fontSize,
+      fontWeight,
+      textShadow
+    })) return;
 
     if (!parsedFG) return;
     const colors = this.resolveSolidColors(element, parsedFG);
@@ -378,11 +380,13 @@ class QW_ACT_R37 extends AtomicRule {
    *
    * @param element - Target element whose paint stack is resolved.
    * @param textColor - Parsed foreground colour before ancestor compositing.
+   * @param targetBackground - Proven target-layer gradient colour.
    * @returns Resolved opaque colours or a manual-review reason.
    */
   private resolveSolidColors(
     element: QWElement,
-    textColor: RGBColor
+    textColor: RGBColor,
+    targetBackground?: RGBColor
   ): BackgroundResolution {
     let background = { ...TRANSPARENT };
     let foreground = { ...textColor };
@@ -392,9 +396,10 @@ class QW_ACT_R37 extends AtomicRule {
     while (current) {
       // Opaque descendant pixels hide this ancestor's background. Its opacity
       // still applies to the accumulated group and can expose later layers.
+      const targetLayer = isTarget ? targetBackground : undefined;
       const layer: BackgroundLayerResolution = background.alpha === 1 && foreground.alpha === 1
         ? { kind: 'color', color: TRANSPARENT }
-        : this.resolveBackgroundLayer(current);
+        : this.resolveBackgroundLayer(current, targetLayer);
       if (layer.kind === 'cantTell') return layer;
       const layerColor = layer.color;
 
@@ -428,7 +433,8 @@ class QW_ACT_R37 extends AtomicRule {
    * @param element - Element supplying the background layer.
    * @returns Solid layer colour or an image/gradient manual-review reason.
    */
-  private resolveBackgroundLayer(element: QWElement): BackgroundLayerResolution {
+  private resolveBackgroundLayer(element: QWElement, suppliedColor?: RGBColor): BackgroundLayerResolution {
+    if (suppliedColor) return { kind: 'color', color: { ...suppliedColor } };
     const background = this.getBackground(element);
     if (this.isImage(background)) return { kind: 'cantTell', resultCode: 'W2' };
     if (this.isGradient(background)) return { kind: 'cantTell', resultCode: 'W3' };
@@ -487,104 +493,368 @@ class QW_ACT_R37 extends AtomicRule {
     return Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1;
   }
 
-  private evaluateGradient(
-    test: Test,
-    element: QWElement,
-    parsedGradientString: string,
-    fgColor: string,
-    opacity: number,
-    fontSize: string,
-    fontWeight: string,
-    fontStyle: string,
-    fontFamily: string,
-    elementText: string
-  ): void {
-    // Non-linear gradients aren't supported → warn.
-    if (!parsedGradientString.startsWith('linear-gradient')) {
-      this.emit(test, element, Verdict.WARNING, 'W3');
-      return;
+  /**
+   * Evaluate image/gradient backgrounds.
+   *
+   * @param options - Element, paint and typography data required for evaluation.
+   * @returns True when the background was non-solid and fully handled; false
+   * when the caller should continue through the solid-colour path.
+   */
+  private evaluateNonSolidBackground(options: NonSolidEvaluation): boolean {
+    if (this.isImage(options.background)) {
+      this.emit(options.test, options.element, Verdict.WARNING, 'W2');
+      return true;
+    }
+    if (!this.isGradient(options.background)) return false;
+
+    if (!this.isHumanLanguage(options.text)) {
+      this.emit(options.test, options.element, Verdict.PASSED, 'P2');
+      return true;
     }
 
-    const colors = this.parseGradientString(parsedGradientString);
-    // Guard against an unparseable stop list (otherwise: crash on the
-    // text-size branch, or a false PASSED from an empty stop loop).
-    if (colors.length === 0) {
-      this.emit(test, element, Verdict.WARNING, 'W3');
-      return;
+    const stops = this.parseSupportedGradient(options.background);
+    // A definitive result is allowed only when every part of the simplified
+    // paint model is known. Unsupported syntax or effects deliberately retain
+    // the historic W3 manual-review outcome instead of guessing.
+    if (
+      !options.foreground ||
+      options.foreground.alpha !== 1 ||
+      !stops ||
+      !this.hasMonotonicRGBInterpolation(stops) ||
+      !this.hasReliableGradientPaintStack(options.element) ||
+      this.hasAlternativeVisibleTextPaint(options.element, options.foreground)
+    ) {
+      this.emit(options.test, options.element, Verdict.WARNING, 'W3');
+      return true;
     }
 
-    const parsedFG = this.parseRGBString(fgColor);
-    if (!parsedFG) {
-      this.emit(test, element, Verdict.WARNING, 'W3');
-      return;
+    if (this.hasVisibleTextShadow(options.textShadow, options.foreground)) {
+      this.emit(options.test, options.element, Verdict.WARNING, 'W1');
+      return true;
     }
-    parsedFG.alpha *= opacity;
 
-    const bold = this.isBold(fontWeight);
-    const stopsToCheck = this.gradientStopsToCheck(element, colors, fontSize, fontWeight, fontStyle, fontFamily, elementText);
+    const interval = this.getGradientTextInterval(options.element);
+    if (!interval) {
+      this.emit(options.test, options.element, Verdict.WARNING, 'W3');
+      return true;
+    }
 
-    const isValid = stopsToCheck.every((stop) =>
-      this.hasValidContrastRatio(this.getContrast(stop, parsedFG), fontSize, bold)
+    const resolved: Array<{ background: RGBColor; foreground: RGBColor }> = [];
+    // Monotonicity means the two horizontal endpoints bound every background
+    // luminance under the text; sampling interior pixels is unnecessary.
+    for (const ratio of interval) {
+      const background = this.getColorInGradient(stops[0], stops[1], ratio);
+      const colors = this.resolveSolidColors(options.element, options.foreground, background);
+      if (colors.kind === 'cantTell') {
+        this.emit(options.test, options.element, Verdict.WARNING, colors.resultCode);
+        return true;
+      }
+      resolved.push(colors);
+    }
+
+    // Matching foreground/background pixels render no visible text and are
+    // inapplicable (ACT Inapplicable Example 3), including a flat gradient.
+    if (resolved.every((colors) => this.equals(colors.background, colors.foreground))) return true;
+
+    const verdicts = resolved.map((colors) =>
+      this.hasValidContrastRatio(
+        this.getContrast(colors.background, colors.foreground),
+        options.fontSize,
+        this.isBold(options.fontWeight)
+      )
     );
 
-    this.emit(test, element, isValid ? Verdict.PASSED : Verdict.FAILED, isValid ? 'P3' : 'F2');
+    // With component-wise monotonic sRGB interpolation, relative luminance is
+    // monotonic. If both interval endpoints fail, no point under the text can
+    // meet the threshold, so F2 is guaranteed.
+    if (verdicts.every((verdict) => !verdict)) {
+      this.emit(options.test, options.element, Verdict.FAILED, 'F2');
+      return true;
+    }
+
+    // P3 is guaranteed only when the entire interval passes. Keeping both
+    // endpoint backgrounds on the same side of the foreground luminance avoids
+    // an internal contrast minimum where the gradient crosses the foreground.
+    if (verdicts.every(Boolean) && this.isLuminanceIntervalOnOneSide(resolved)) {
+      this.emit(options.test, options.element, Verdict.PASSED, 'P3');
+      return true;
+    }
+
+    this.emit(options.test, options.element, Verdict.WARNING, 'W3');
+    return true;
   }
 
   /**
-   * Picks the gradient stops to test against. When the rendered text width can
-   * be determined we only need the start stop and the colour under the last
-   * character; otherwise we fall back to every parsed stop.
+   * Parses the deliberately narrow gradient shape supported for P3/F2.
+   *
+   * Stop positions, transparency, repeating gradients and other directions
+   * change the mapping between layout coordinates and colour. They remain W3
+   * until that mapping is modelled explicitly.
+   *
+   * @param gradient - Computed CSS gradient value.
+   * @returns Two opaque endpoint colours when the supported syntax is proven.
    */
-  private gradientStopsToCheck(
-    element: QWElement,
-    colors: RGBColor[],
-    fontSize: string,
-    fontWeight: string,
-    fontStyle: string,
-    fontFamily: string,
-    elementText: string
-  ): RGBColor[] {
-    const textSize = this.getTextSize(
-      fontFamily.toLowerCase().replace(/['"]+/g, ''),
-      parseInt(fontSize.replace('px', ''), 10),
-      this.isBold(fontWeight),
-      fontStyle.toLowerCase().includes('italic'),
-      elementText
+  private parseSupportedGradient(gradient: string): [RGBColor, RGBColor] | undefined {
+    const trimmed = gradient.trim();
+    if (!trimmed.toLowerCase().startsWith('linear-gradient(') || !trimmed.endsWith(')')) return undefined;
+
+    const argumentsList = this.splitTopLevelCommaList(trimmed.slice(trimmed.indexOf('(') + 1, -1));
+    if (argumentsList.length !== 3 || !['to right', '90deg'].includes(argumentsList[0].trim().toLowerCase())) {
+      return undefined;
+    }
+
+    const stopValues = argumentsList.slice(1).map((value) => value.trim());
+    // Computed legacy sRGB stops serialize as rgb()/rgba(). Modern colour
+    // functions can default to Oklab interpolation even after conversion to
+    // sRGB, so their channels do not support the proof below.
+    if (!stopValues.every((value) => /^rgba?\(/i.test(value))) return undefined;
+    const from = this.parseRGBString(stopValues[0]);
+    const to = this.parseRGBString(stopValues[1]);
+    return from && to && from.alpha === 1 && to.alpha === 1 ? [from, to] : undefined;
+  }
+
+  /**
+   * Split a CSS argument list without splitting commas inside colour functions.
+   *
+   * @param value - CSS function argument text.
+   * @returns Top-level arguments in source order.
+   */
+  private splitTopLevelCommaList(value: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = '';
+
+    for (const character of value) {
+      if (character === '(') depth++;
+      else if (character === ')') depth = Math.max(0, depth - 1);
+
+      if (character === ',' && depth === 0) {
+        parts.push(current.trim());
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+    if (current.trim() !== '') parts.push(current.trim());
+    return parts;
+  }
+
+  /**
+   * Component-wise monotonic sRGB interpolation also has monotonic relative
+   * luminance. Mixed channel directions need fuller colour-space analysis and
+   * therefore remain manual-review cases.
+   *
+   * @param colors - Gradient endpoint colours.
+   * @returns True when all sRGB channels move in the same direction.
+   */
+  private hasMonotonicRGBInterpolation(colors: [RGBColor, RGBColor]): boolean {
+    const deltas = [
+      colors[1].red - colors[0].red,
+      colors[1].green - colors[0].green,
+      colors[1].blue - colors[0].blue
+    ];
+    return deltas.every((delta) => delta >= 0) || deltas.every((delta) => delta <= 0);
+  }
+
+  /**
+   * Returns the horizontal gradient interval that can contain painted text.
+   * Text-node ranges give the actual layout position, including alignment,
+   * indentation and wrapping. Form-control text has no DOM range, so the whole
+   * padding box is used as a safe superset.
+   *
+   * @param element - Element whose gradient and text geometry are mapped.
+   * @returns Normalised horizontal text interval, or undefined when not provable.
+   */
+  private getGradientTextInterval(element: QWElement): [number, number] | undefined {
+    // These computed defaults make the gradient line match the padding box.
+    // Any author override changes the geometry and therefore invalidates the
+    // simple ratio calculation below.
+    if (element.getElementStyleProperty('background-origin', null) !== 'padding-box') return undefined;
+    if (!['auto', 'auto auto'].includes(element.getElementStyleProperty('background-size', null))) return undefined;
+    if (!['0% 0%', '0px 0px', '0% 0px', '0px 0%'].includes(
+      element.getElementStyleProperty('background-position', null)
+    )) return undefined;
+    if (element.getElementStyleProperty('background-clip', null) !== 'border-box') return undefined;
+    if (element.getElementStyleProperty('background-blend-mode', null) !== 'normal') return undefined;
+    if (element.getElementStyleProperty('background-attachment', null) !== 'scroll') return undefined;
+    if (element.getElementStyleProperty('display', null) === 'inline') return undefined;
+
+    const box = element.getBoundingBox();
+    const borderLeft = parseFloat(element.getElementStyleProperty('border-left-width', null));
+    const borderRight = parseFloat(element.getElementStyleProperty('border-right-width', null));
+    if (![box.left, box.right, box.width, borderLeft, borderRight].every(Number.isFinite)) return undefined;
+
+    const gradientLeft = box.left + borderLeft;
+    const gradientRight = box.right - borderRight;
+    const gradientWidth = gradientRight - gradientLeft;
+    if (gradientWidth <= 0) return undefined;
+
+    const textRects = (element.getChildrenTextNodes() ?? [])
+      .map((node) => node.getBoundingBox())
+      .filter((rect): rect is DOMRect => rect !== null);
+
+    // Rendered form values and placeholders have no text node. The complete
+    // positioning area is conservative: it can only turn a mixed case into W3.
+    if (textRects.length === 0) return [0, 1];
+
+    const textLeft = Math.min(...textRects.map((rect) => rect.left));
+    const textRight = Math.max(...textRects.map((rect) => rect.right));
+    const tolerance = 0.5;
+    if (textLeft < gradientLeft - tolerance || textRight > gradientRight + tolerance) return undefined;
+
+    return [
+      Math.max(0, Math.min(1, (textLeft - gradientLeft) / gradientWidth)),
+      Math.max(0, Math.min(1, (textRight - gradientLeft) / gradientWidth))
+    ];
+  }
+
+  /**
+   * Reject paint effects that invalidate the affine colour/geometry model.
+   * Returning false here never creates a pass or failure; it falls back to W3.
+   *
+   * @param element - Gradient target whose paint stack is inspected.
+   * @returns True when no unsupported paint or overlap can affect the proof.
+   */
+  private hasReliableGradientPaintStack(element: QWElement): boolean {
+    // Descendants may paint between the gradient and the target text. Their
+    // stacking and transparency are intentionally outside this proof.
+    if (element.elementHasChildren() || this.hasPotentiallyOverlappingSibling(element)) return false;
+
+    let current: QWElement | null = element;
+    while (current) {
+      if (this.hasUnsupportedPaintEffect(current) || this.hasGeneratedContentLayer(current)) return false;
+      current = current.getElementParent();
+    }
+    return true;
+  }
+
+  /**
+   * Return whether an element applies effects outside the gradient model.
+   *
+   * @param element - Target or ancestor whose computed paint styles are inspected.
+   * @returns True when opacity, transforms, filters, blending, inset shadows or zoom are unsupported.
+   */
+  private hasUnsupportedPaintEffect(element: QWElement): boolean {
+    const expectedStyles: Array<[string, string]> = [
+      ['transform', 'none'],
+      ['rotate', 'none'],
+      ['scale', 'none'],
+      ['translate', 'none'],
+      ['filter', 'none'],
+      ['backdrop-filter', 'none'],
+      ['mask-image', 'none'],
+      ['mix-blend-mode', 'normal']
+    ];
+    const hasUnexpectedStyle = expectedStyles.some(
+      ([property, expected]) => element.getElementStyleProperty(property, null) !== expected
     );
-
-    const elementWidth = parseInt((element.getElementStyleProperty('width', null) ?? '').replace('px', ''), 10);
-
-    if (textSize !== -1 && Number.isFinite(elementWidth) && elementWidth > 0) {
-      const lastCharRatio = textSize / elementWidth;
-      const lastCharColor = this.getColorInGradient(colors[0], colors[colors.length - 1], lastCharRatio);
-      return [colors[0], lastCharColor];
-    }
-    return colors;
+    const zoom = parseFloat(element.getElementStyleProperty('zoom', null));
+    const hasZoom = Number.isFinite(zoom) && zoom !== 1;
+    const hasInsetShadow = this.splitShadowLayers(element.getElementStyleProperty('box-shadow', null))
+      .some((layer) => /\binset\b/i.test(layer));
+    return this.parseOpacity(element.getElementStyleProperty('opacity', null)) !== 1 ||
+      hasUnexpectedStyle || hasZoom || hasInsetShadow;
   }
 
-  private parseGradientString(gradient: string): RGBColor[] {
-    const regex = /rgb(a?)\((\d+), (\d+), (\d+)+(, +(\d)+)?\)/gm;
-    const matches = gradient.match(regex) ?? [];
-    const colors: RGBColor[] = [];
-    for (const stringColor of matches) {
-      const parsed = this.parseRGBString(stringColor);
-      if (parsed) colors.push(parsed);
-    }
-    return colors;
+  /**
+   * Return whether either generated pseudo-element can contribute painted content.
+   *
+   * @param element - Element whose generated content is inspected.
+   * @returns True when ::before or ::after has a non-empty content value.
+   */
+  private hasGeneratedContentLayer(element: QWElement): boolean {
+    return ['::before', '::after'].some((pseudo) =>
+      this.hasGeneratedContent(element, pseudo as '::before' | '::after')
+    );
   }
 
-  private getColorInGradient(fromColor: RGBColor, toColor: RGBColor, ratio: number): RGBColor {
-    // Clamp so an oversized last-char position can't extrapolate past the stops.
-    const r = Math.max(0, Math.min(1, ratio));
+  /**
+   * Return whether one generated pseudo-element has non-empty computed content.
+   *
+   * @param element - Element owning the pseudo-element.
+   * @param pseudo - Generated pseudo-element to inspect.
+   * @returns True when the pseudo-element may contribute painted content.
+   */
+  private hasGeneratedContent(element: QWElement, pseudo: '::before' | '::after'): boolean {
+    const content = element.getElementStyleProperty('content', pseudo).trim().toLowerCase();
+    return content !== '' && content !== 'none' && content !== 'normal';
+  }
+
+  /**
+   * Overlapping siblings can replace the background pixels under the text.
+   * Rejecting any overlap is conservative with respect to stacking order, but
+   * prevents a definitive result when that order has not been modelled.
+   *
+   * @param element - Gradient target whose sibling geometry is inspected.
+   * @returns True when a sibling at any ancestor level intersects the target.
+   */
+  private hasPotentiallyOverlappingSibling(element: QWElement): boolean {
+    const target = element.getBoundingBox();
+    let current: QWElement | null = element;
+    let parent = current.getElementParent();
+
+    while (parent) {
+      const currentSelector = current.getElementSelector();
+      for (const sibling of parent.getElementChildren()) {
+        if (sibling.getElementSelector() === currentSelector) continue;
+        if (this.rectanglesOverlap(target, sibling.getBoundingBox())) return true;
+      }
+      current = parent;
+      parent = current.getElementParent();
+    }
+    return false;
+  }
+
+  /**
+   * Return whether two non-empty layout rectangles have a positive-area intersection.
+   *
+   * @param first - Target rectangle.
+   * @param second - Potentially overlapping rectangle.
+   * @returns True when both axes overlap by a positive amount.
+   */
+  private rectanglesOverlap(first: DOMRect, second: DOMRect): boolean {
+    if (second.width <= 0 || second.height <= 0) return false;
+    const intersectsHorizontally = first.left < second.right && first.right > second.left;
+    const intersectsVertically = first.top < second.bottom && first.bottom > second.top;
+    return intersectsHorizontally && intersectsVertically;
+  }
+
+  /**
+   * Return whether all endpoint backgrounds lie on one side of foreground luminance.
+   *
+   * @param colors - Resolved foreground/background pairs at interval endpoints.
+   * @returns True when the interval cannot cross the foreground luminance.
+   */
+  private isLuminanceIntervalOnOneSide(
+    colors: Array<{ background: RGBColor; foreground: RGBColor }>
+  ): boolean {
+    const differences = colors.map(
+      ({ background, foreground }) => this.getLuminance(background) - this.getLuminance(foreground)
+    );
+    return differences.every((difference) => difference >= 0) || differences.every((difference) => difference <= 0);
+  }
+
+  /**
+   * Interpolate one sRGB colour at a normalised horizontal gradient position.
+   *
+   * @param from - Gradient start colour.
+   * @param to - Gradient end colour.
+   * @param ratio - Normalised horizontal position from zero to one.
+   * @returns Interpolated sRGB colour.
+   */
+  private getColorInGradient(from: RGBColor, to: RGBColor, ratio: number): RGBColor {
     return {
-      red: fromColor.red + (toColor.red - fromColor.red) * r,
-      green: fromColor.green + (toColor.green - fromColor.green) * r,
-      blue: fromColor.blue + (toColor.blue - fromColor.blue) * r,
-      alpha: 1
+      red: from.red + (to.red - from.red) * ratio,
+      green: from.green + (to.green - from.green) * ratio,
+      blue: from.blue + (to.blue - from.blue) * ratio,
+      alpha: from.alpha + (to.alpha - from.alpha) * ratio
     };
   }
 
   // ---------------------------------------------------------------------------
+  // Colour maths
+  // ---------------------------------------------------------------------------
+
   /**
    * Parse a CSS colour into unpremultiplied sRGB channels and alpha.
    *
@@ -709,10 +979,6 @@ class QW_ACT_R37 extends AtomicRule {
    */
   private isHumanLanguage(text: string): boolean {
     return window.DomUtils.isHumanLanguage(text);
-  }
-
-  private getTextSize(font: string, fontSize: number, bold: boolean, italic: boolean, text: string): number {
-    return window.DomUtils.getTextSize(font, fontSize, bold, italic, text);
   }
 
   // ---------------------------------------------------------------------------
