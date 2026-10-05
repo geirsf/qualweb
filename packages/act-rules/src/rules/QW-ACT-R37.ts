@@ -17,9 +17,25 @@ interface NonSolidEvaluation {
   background: string;
   text: string;
   foreground: RGBColor | undefined;
+  pseudoOpacity: number;
   fontSize: string;
   fontWeight: string;
   textShadow: string;
+}
+
+interface RenderedText {
+  text: string;
+  pseudoStyle: '::placeholder' | null;
+  styleElement?: QWElement;
+}
+
+interface RenderedStyles {
+  foreground: string;
+  fontSize: string;
+  fontWeight: string;
+  opacity: number;
+  textShadow: string;
+  hasInaccessiblePseudoStyles: boolean;
 }
 
 /** Result of resolving an element's effective solid background. */
@@ -35,7 +51,10 @@ const WHITE: RGBColor = { red: 255, green: 255, blue: 255, alpha: 1 };
 const TRANSPARENT: RGBColor = { red: 0, green: 0, blue: 0, alpha: 0 };
 const LARGE_BOLD_TEXT_PX = (14 * 96) / 72;
 const LARGE_TEXT_PX = (18 * 96) / 72;
-const INPUT_TAGS = ['input', 'select', 'textarea'];
+const NON_TEXT_INPUT_TYPES = new Set(['hidden', 'range', 'color', 'checkbox', 'radio', 'image']);
+const PLACEHOLDER_INPUT_TYPES = new Set(['text', 'search', 'tel', 'url', 'email', 'password', 'number']);
+const PLACEHOLDER_STYLE_PROPERTIES = ['color', 'opacity', 'font-size', 'font-weight', 'text-shadow'];
+
 
 /**
  * Resolve solid text contrast through ancestor backgrounds and opacity groups.
@@ -50,62 +69,87 @@ class QW_ACT_R37 extends AtomicRule {
   @ElementIsNot(['html', 'head', 'body', 'script', 'style', 'meta'])
   @ElementIsVisible
   execute(element: QWElement): void {
+    // Keep the explicit visibility guard because this method can also be
+    // invoked outside the decorator-driven runner in tests and integrations.
     if (!window.DomUtils.isElementVisible(element)) return;
 
-    const nodeName = element.getElementTagName();
-    const isInputField = INPUT_TAGS.includes(nodeName);
-    const elementText = element.getElementOwnText().trim();
-    const placeholder = element.getElementAttribute('placeholder')?.trim();
-
-    // Not applicable: no own text, not a form field, no placeholder.
-    if (elementText === '' && !isInputField && !placeholder) return;
+    // ACT targets text nodes. QualWeb intentionally extends that target set to
+    // rendered form values/placeholders, which are visible WCAG 1.4.3 content
+    // even though browsers do not expose them as child text nodes.
+    const renderedText = this.getRenderedText(element);
+    if (renderedText.text === '') return;
 
     if (!element.isElementHTMLElement()) return;
 
+    // Disabled group/widget content, including text used as its accessible
+    // label, is outside afw4f7 applicability.
     if (this.hasDisabledAncestorOrLabel(element, window.disabledWidgets)) return;
 
-    const fgColor = element.getElementStyleProperty('color', null);
+    const renderedStyles = this.getRenderedStyles(element, renderedText);
+    const fgColor = renderedStyles.foreground;
     const bgColor = this.getBackground(element);
     const opacity = this.parseOpacity(element.getElementStyleProperty('opacity', null));
-    const fontSize = element.getElementStyleProperty('font-size', null);
-    const fontWeight = element.getElementStyleProperty('font-weight', null);
-    const textShadow = element.getElementStyleProperty('text-shadow', null);
+    const pseudoOpacity = renderedStyles.opacity;
+    const fontSize = renderedStyles.fontSize;
+    const fontWeight = renderedStyles.fontWeight;
+    const textShadow = renderedStyles.textShadow;
 
     const test = new Test();
-
     const parsedFG = this.parseRGBString(fgColor);
-    if (this.handleTransparentText(test, element, parsedFG, opacity, textShadow)) return;
+
+    // Element opacity applies to text, pseudo-elements and their shadows.
+    if (opacity === 0) return;
+
+    if (renderedStyles.hasInaccessiblePseudoStyles) {
+      // Cross-origin stylesheets can affect ::placeholder but cannot be read by
+      // the CSSOM. A warning is safer than evaluating browser fallback styles.
+      this.emit(test, element, Verdict.WARNING, 'W4');
+      return;
+    }
+
+    // Alpha-zero `color` is normally unpainted, but shadows, strokes, fills and
+    // background-clipped text can still render glyph pixels independently.
+    if (this.handleTransparentText(test, element, parsedFG, opacity * pseudoOpacity, textShadow)) return;
+
     if (this.hasDisqualifyingShadow(textShadow, parseFloat(fontSize))) {
       this.emit(test, element, Verdict.WARNING, 'W1');
       return;
     }
 
-    if (this.evaluateNonSolidBackground({
-      test,
-      element,
-      background: bgColor,
-      text: elementText || placeholder || '',
-      foreground: parsedFG,
-      fontSize,
-      fontWeight,
-      textShadow
-    })) return;
+    if (
+      this.evaluateNonSolidBackground({
+        test,
+        element,
+        background: bgColor,
+        text: renderedText.text,
+        foreground: parsedFG,
+        pseudoOpacity,
+        fontSize,
+        fontWeight,
+        textShadow
+      })
+    )
+      return;
 
+    // The non-solid branch has either emitted a result or declined the target.
+    // From here the normal alpha-composited solid-colour path is sufficient.
     if (!parsedFG) return;
+    parsedFG.alpha *= pseudoOpacity;
     const colors = this.resolveSolidColors(element, parsedFG);
     if (colors.kind === 'cantTell') {
       this.emit(test, element, Verdict.WARNING, colors.resultCode);
       return;
     }
-    // Text that changes no rendered pixels is outside ACT applicability.
+
+    // ACT applicability requires visible text, defined as content whose
+    // rendering changes pixels. Identical foreground and background colors do
+    // not change pixels and are therefore outside this atomic rule.
     if (this.equals(colors.background, colors.foreground)) {
-      // Matching normal foreground pixels do not hide independent glyph paint.
       this.warnForIndependentTextPaint(test, element, parsedFG, textShadow);
       return;
     }
 
-    const textToVerify = elementText || placeholder || '';
-    if (!this.isHumanLanguage(textToVerify)) {
+    if (!this.isHumanLanguage(renderedText.text)) {
       this.emit(test, element, Verdict.PASSED, 'P2');
       return;
     }
@@ -113,6 +157,144 @@ class QW_ACT_R37 extends AtomicRule {
     const contrastRatio = this.getContrast(colors.background, colors.foreground);
     const isValid = this.hasValidContrastRatio(contrastRatio, fontSize, this.isBold(fontWeight));
     this.emit(test, element, isValid ? Verdict.PASSED : Verdict.FAILED, isValid ? 'P1' : 'F1');
+  }
+
+  /**
+   * Returns the text that is currently painted by the element. Form controls
+   * expose their rendered text through DOM properties rather than text-node
+   * children, so values changed at runtime are intentionally preferred over
+   * their original attributes.
+   *
+   * @param element - Candidate element whose painted text is requested.
+   * @returns Rendered text together with its pseudo/style source.
+   */
+  private getRenderedText(element: QWElement): RenderedText {
+    const nodeName = element.getElementTagName();
+
+    if (nodeName === 'input') return this.getInputText(element);
+    if (nodeName === 'textarea') return this.getTextAreaText(element);
+    if (nodeName === 'select') return this.getSelectText(element);
+    return { text: element.getElementOwnText().trim(), pseudoStyle: null };
+  }
+
+  /**
+   * Return the value, default label or placeholder currently painted by an input.
+   *
+   * @param element - Input element whose rendered text is requested.
+   * @returns Rendered input text and any pseudo-element style source.
+   */
+  private getInputText(element: QWElement): RenderedText {
+    const inputType = (element.getElementProperty('type') || 'text').toLowerCase();
+    if (NON_TEXT_INPUT_TYPES.has(inputType)) return { text: '', pseudoStyle: null };
+
+    const value = element.getElementProperty('value');
+    if (value !== '') return { text: value.trim(), pseudoStyle: null };
+
+    // Empty submit/reset inputs still render a browser-provided default label.
+    if (inputType === 'submit' || inputType === 'reset') {
+      const hasValue = element.getElementAttribute('value') !== null;
+      const defaultLabel = inputType === 'submit' ? 'Submit' : 'Reset';
+      return { text: hasValue ? '' : defaultLabel, pseudoStyle: null };
+    }
+
+    const placeholder = element.getElementAttribute('placeholder')?.trim() ?? '';
+    return PLACEHOLDER_INPUT_TYPES.has(inputType) && placeholder !== ''
+      ? { text: placeholder, pseudoStyle: '::placeholder' }
+      : { text: '', pseudoStyle: null };
+  }
+
+  /**
+   * Return the live textarea value, or its placeholder when the value is empty.
+   *
+   * @param element - Textarea element whose rendered text is requested.
+   * @returns Live value or placeholder with its style source.
+   */
+  private getTextAreaText(element: QWElement): RenderedText {
+    const value = element.getElementProperty('value');
+    if (value !== '') return { text: value.trim(), pseudoStyle: null };
+
+    const placeholder = element.getElementAttribute('placeholder')?.trim() ?? '';
+    return placeholder !== '' ? { text: placeholder, pseudoStyle: '::placeholder' } : { text: '', pseudoStyle: null };
+  }
+
+  /**
+   * Return the label currently painted for the selected option.
+   *
+   * @param element - Select element whose collapsed label is requested.
+   * @returns Selected label and the option supplying its foreground styles.
+   */
+  private getSelectText(element: QWElement): RenderedText {
+    const selectedOption = element.getElement('option:checked');
+    const selectedText = selectedOption
+      ? (selectedOption.getElementProperty('label') || selectedOption.getElementText()).trim()
+      : '';
+    // The collapsed control paints the selected option's label and may inherit
+    // its foreground/font styles, while the select still supplies the backdrop.
+    return { text: selectedText, pseudoStyle: null, styleElement: selectedOption ?? undefined };
+  }
+
+  /**
+   * Resolve styles from the source that actually paints the rendered text.
+   *
+   * @param element - Control or text container supplying the background.
+   * @param renderedText - Text descriptor identifying pseudo/option style sources.
+   * @returns Foreground, typography, opacity and shadow used for evaluation.
+   */
+  private getRenderedStyles(element: QWElement, renderedText: RenderedText): RenderedStyles {
+    const pseudoResolution = renderedText.pseudoStyle
+      ? element.getElementPseudoStyleProperties(PLACEHOLDER_STYLE_PROPERTIES, renderedText.pseudoStyle)
+      : undefined;
+    const pseudoStyles = pseudoResolution?.properties;
+    const styleElement = renderedText.styleElement ?? element;
+    return {
+      foreground: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'color'),
+      fontSize: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'font-size'),
+      fontWeight: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'font-weight'),
+      opacity: renderedText.pseudoStyle ? this.getPseudoOpacity(element, pseudoStyles) : 1,
+      textShadow: this.getRenderedStyleProperty(styleElement, pseudoStyles, 'text-shadow'),
+      // Chromium's pseudo computed style does not expose UA placeholder colour.
+      // Without an authored colour we cannot safely substitute the input colour.
+      hasInaccessiblePseudoStyles: (pseudoResolution?.hasInaccessibleStyles ?? false) ||
+        (renderedText.pseudoStyle !== null && !pseudoStyles?.color)
+    };
+  }
+
+  /**
+   * Resolve a pseudo-element declaration or fall back to its originating element.
+   *
+   * @param element - Element supplying computed fallback styles.
+   * @param pseudoStyles - Resolved authored pseudo-element declarations, if any.
+   * @param property - CSS property to resolve.
+   * @returns Effective authored or computed property value.
+   */
+  private getRenderedStyleProperty(
+    element: QWElement,
+    pseudoStyles: Record<string, string> | undefined,
+    property: string
+  ): string {
+    const pseudoValue = pseudoStyles?.[property]?.trim();
+    // CSS-wide keywords and currentColor depend on the originating element;
+    // computed element styles are the correct fallback for these values.
+    return pseudoValue &&
+      !['currentcolor', 'inherit', 'initial', 'unset', 'revert', 'revert-layer'].includes(pseudoValue.toLowerCase())
+      ? pseudoValue
+      : element.getElementStyleProperty(property, null);
+  }
+
+  /**
+   * Resolve placeholder opacity, including CSS-wide keyword behaviour.
+   *
+   * @param element - Originating form control supplying inherited opacity.
+   * @param pseudoStyles - Resolved authored placeholder declarations, if any.
+   * @returns Normalised placeholder opacity in the range zero to one.
+   */
+  private getPseudoOpacity(element: QWElement, pseudoStyles: Record<string, string> | undefined): number {
+    const value = pseudoStyles?.opacity?.trim().toLowerCase();
+    if (value === 'inherit') {
+      return this.parseOpacity(element.getElementStyleProperty('opacity', null));
+    }
+    if (!value || ['initial', 'unset', 'revert', 'revert-layer'].includes(value)) return 1;
+    return this.parseOpacity(value);
   }
 
   /**
@@ -519,6 +701,7 @@ class QW_ACT_R37 extends AtomicRule {
     if (
       !options.foreground ||
       options.foreground.alpha !== 1 ||
+      options.pseudoOpacity !== 1 ||
       !stops ||
       !this.hasMonotonicRGBInterpolation(stops) ||
       !this.hasReliableGradientPaintStack(options.element) ||
